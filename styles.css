@@ -148,3 +148,23 @@ table.rep th { font-size: 12px; color: var(--muted); }
 .sel-row input[type=checkbox], .sel-all input[type=checkbox] { width: 24px; height: 24px; flex: 0 0 auto; accent-color: var(--green); }
 .sel-bar { position: sticky; bottom: calc(-16px - env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); padding: 10px 0 4px; margin-top: 8px; }
 .sel-bar textarea { min-height: 60px; }
+.cgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; margin-bottom: 8px; }
+.ccard { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); font: inherit; text-align: center; cursor: pointer; }
+.ccard b { font-size: 18px; }
+.ccard small { font-size: 11px; line-height: 1.2; }
+.ccard .d { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.ccard.occ { border-color: var(--amber); background: var(--amber-soft); }
+nav#tabs button { min-width: 0; }
+/* cuadros con más descanso: rest1 = el más nuevo de los 4 (claro), rest4 = el más viejo (oscuro) */
+.ccard.rest1, .rest-legend i.rest1 { background: #d3ecd6; border-color: #a9d6af; color: #1f2a22; }
+.ccard.rest2, .rest-legend i.rest2 { background: #93cd9c; border-color: #6fb87b; color: #13241a; }
+.ccard.rest3, .rest-legend i.rest3 { background: #4f9e5d; border-color: #3f8a4c; color: #fff; }
+.ccard.rest4, .rest-legend i.rest4 { background: #23602f; border-color: #1a4a24; color: #fff; }
+.ccard.rest3 .muted, .ccard.rest4 .muted { color: rgba(255,255,255,.8); }
+.rest-legend { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; color: var(--muted); }
+.rest-legend i { display: inline-block; width: 22px; height: 14px; border-radius: 4px; border: 1px solid; }
+.cpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 6px; }
+.cpick label { margin: 0; display: flex; align-items: center; gap: 6px; padding: 8px 6px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); font-weight: 700; font-size: 15px; background: var(--bg); }
+.cpick label.occ { border-color: var(--amber); }
+.cpick input { width: 20px; height: 20px; accent-color: var(--green); flex: 0 0 auto; }
+.cpick label:has(input:checked) { background: var(--green-soft); border-color: var(--green); }

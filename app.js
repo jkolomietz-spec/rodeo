@@ -44,6 +44,8 @@ const emptyDB = () => ({
   animals: [],    // {id, idv, rfid, sex, periods:[{from,to,reason,detail}], places:[{placeId,date}], createdAt}
   sessions: [],   // {id, date, obs, placeId, open, createdAt, closedAt}
   records: [],    // {id, sessionId, animalId, text, ts}
+  cuadros: [],    // {id, placeId, name}
+  pastoreos: [],  // {id, cuadroId, ingreso, salida, cantidad, obs}
   settings: { driveClientId: '', autoDrive: true, lastBackup: null, lastBackupHow: '', driveFolderId: null, driveDaily: null },
 });
 let DB = emptyDB();
@@ -212,7 +214,7 @@ function go(t) {
 }
 function render() {
   renderHeader();
-  ({ sesion: renderSesion, animales: renderAnimales, lugares: renderLugares, reportes: renderReportes, backup: renderBackup })[tab]();
+  ({ sesion: renderSesion, animales: renderAnimales, lugares: renderLugares, reportes: renderReportes, cuadros: renderCuadros, backup: renderBackup })[tab]();
 }
 
 // ---------- selector de lugar ----------
@@ -928,6 +930,188 @@ function exportHistoryCSV(animals, name) {
 }
 function exportAnimalCSV(a) { exportHistoryCSV([a], `historia-${a.idv}`); }
 function exportAllCSV() { exportHistoryCSV(DB.animals, `historia-completa-${today()}`); }
+
+// ================= CUADROS =================
+// Cuadros predefinidos: se crean solos la primera vez para los lugares "Chacra" y "Media chacra".
+const CUADROS_DEF = [
+  { match: /^chacra$/i, names: ['A', 'B', 'C', 'D'].flatMap(l => [1, 2, 3, 4, 5, 6, 7, 8].map(n => l + n)) },
+  { match: /^media chacra$/i, names: ['MA', 'MB'].flatMap(l => [1, 2, 3, 4, 5, 6, 7, 8].map(n => l + n)) },
+];
+function ensureCuadros() {
+  DB.cuadros = DB.cuadros || []; DB.pastoreos = DB.pastoreos || [];
+  let added = false;
+  for (const def of CUADROS_DEF) {
+    const p = DB.places.find(x => def.match.test(x.name.trim()));
+    if (!p || DB.cuadros.some(c => c.placeId === p.id)) continue;
+    def.names.forEach(name => DB.cuadros.push({ id: uid(), placeId: p.id, name }));
+    added = true;
+  }
+  return added;
+}
+const cuadro = (id) => DB.cuadros.find(c => c.id === id);
+const byName = (a, b) => a.name.localeCompare(b.name, 'es', { numeric: true });
+const daysBetween = (a, b) => Math.round((new Date(b) - new Date(a)) / 864e5);
+function cuadroState(c) {
+  const ps = DB.pastoreos.filter(p => p.cuadroId === c.id);
+  const open = ps.filter(p => !p.salida).sort((a, b) => b.ingreso.localeCompare(a.ingreso))[0] || null;
+  const lastOut = ps.filter(p => p.salida).sort((a, b) => b.salida.localeCompare(a.salida))[0] || null;
+  return { ps, open, lastOut };
+}
+
+let cuadrosPlace = '';
+function renderCuadros() {
+  if (ensureCuadros()) save();
+  const v = $('#view');
+  const places = DB.places.filter(p => DB.cuadros.some(c => c.placeId === p.id));
+  if (!places.length) {
+    v.innerHTML = `<h2>Cuadros</h2><div class="card"><p>Todavía no hay cuadros. Se crean solos cuando existen los lugares <b>Chacra</b> y <b>Media chacra</b>.</p></div>`;
+    return;
+  }
+  if (!places.some(p => p.id === cuadrosPlace)) cuadrosPlace = places[0].id;
+  const list = DB.cuadros.filter(c => c.placeId === cuadrosPlace).sort(byName);
+  const hoy = today();
+  const ocupados = list.filter(c => cuadroState(c).open).length;
+  // los 4 cuadros libres con la salida más antigua (más descanso): rest4 = el más viejo (verde más oscuro)
+  const rest = {};
+  list.map(c => ({ c, st: cuadroState(c) })).filter(x => !x.st.open && x.st.lastOut)
+    .sort((a, b) => a.st.lastOut.salida.localeCompare(b.st.lastOut.salida) || byName(a.c, b.c))
+    .slice(0, 4).forEach((x, i) => rest[x.c.id] = 4 - i);
+  v.innerHTML = `
+    <div class="row"><h2 class="grow">Cuadros</h2><button class="btn sm" id="cNew">+ Registrar</button></div>
+    <div class="chips">${places.map(p => `<button data-pl="${p.id}" class="${p.id === cuadrosPlace ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>
+    <p class="small muted" style="margin-top:0">${list.length} cuadros · ${ocupados} ocupados. Se muestra la <b>última salida</b> de animales de cada cuadro; tocá uno para ver su historia o registrar ingreso/salida.</p>
+    <div class="cgrid">${list.map(c => {
+      const st = cuadroState(c);
+      return `<button class="ccard ${st.open ? 'occ' : ''} ${rest[c.id] ? 'rest' + rest[c.id] : ''}" data-c="${c.id}">
+        <b>${esc(c.name)}</b>
+        ${st.open ? `<span class="tag warn">OCUPADO</span><small>desde ${fmt(st.open.ingreso)}${st.open.cantidad ? '<br>' + st.open.cantidad + ' animales' : ''}</small>` : ''}
+        <small class="muted">Última salida</small>
+        <span class="d">${st.lastOut ? fmt(st.lastOut.salida) : '—'}</span>
+        ${st.lastOut && !st.open ? `<small>${daysBetween(st.lastOut.salida, hoy)} días</small>` : ''}
+      </button>`;
+    }).join('')}</div>
+    ${Object.keys(rest).length ? `<div class="rest-legend small"><span>Más descanso:</span>
+      <i class="rest1"></i><i class="rest2"></i><i class="rest3"></i><i class="rest4"></i><span>menos → más días</span></div>` : ''}
+    <button class="btn ghost block" id="cCsv">⬇ Exportar informe CSV</button>
+    <button class="btn ghost block" id="cAdd">+ Agregar cuadro</button>`;
+  $$('[data-pl]', v).forEach(b => b.onclick = () => { cuadrosPlace = b.dataset.pl; renderCuadros(); });
+  $$('[data-c]', v).forEach(b => b.onclick = () => cuadroDetail(b.dataset.c));
+  $('#cNew').onclick = () => pastoreoForm(null, null, renderCuadros);
+  $('#cCsv').onclick = () => exportCuadrosCSV(cuadrosPlace);
+  $('#cAdd').onclick = () => cuadroForm(cuadrosPlace);
+}
+
+function cuadroDetail(cid) {
+  const c = cuadro(cid); if (!c) return;
+  const st = cuadroState(c);
+  const refresh = () => { renderCuadros(); cuadroDetail(cid); };
+  const hist = st.ps.slice().sort((a, b) => b.ingreso.localeCompare(a.ingreso));
+  openModal(`
+    <div class="row"><h2 class="grow" style="margin:0">Cuadro ${esc(c.name)}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    <p class="small muted">${esc(placeName(c.placeId))}</p>
+    <div class="kpis" style="grid-template-columns:1fr 1fr">
+      <div class="kpi"><b class="d">${st.open ? 'Ocupado' : 'Libre'}</b><small>${st.open ? 'desde ' + fmt(st.open.ingreso) + (st.open.cantidad ? ' · ' + st.open.cantidad + ' an.' : '') : 'sin animales'}</small></div>
+      <div class="kpi"><b class="d">${st.lastOut ? fmt(st.lastOut.salida) : '—'}</b><small>Última salida${st.lastOut && !st.open ? ' · ' + daysBetween(st.lastOut.salida, today()) + ' días' : ''}</small></div>
+    </div>
+    <div class="row" style="margin:12px 0">
+      ${st.open ? '<button class="btn grow" id="cdOut">Registrar salida</button>' : '<button class="btn grow" id="cdIn">Registrar ingreso</button>'}
+    </div>
+    <h3>Historia</h3>
+    ${hist.length ? `<ul class="list">${hist.map(p => `
+      <li><div class="row"><div class="grow">
+        <b>${fmt(p.ingreso)}</b> → <b>${p.salida ? fmt(p.salida) : 'sigue'}</b>
+        <span class="small muted">${p.salida ? ' · ' + daysBetween(p.ingreso, p.salida) + ' días' : ''}${p.cantidad ? ' · ' + p.cantidad + ' animales' : ''}</span>
+        ${p.obs ? `<div class="small" style="white-space:pre-wrap">${esc(p.obs)}</div>` : ''}
+      </div><button class="btn ghost sm" data-pe="${p.id}" aria-label="Editar">✎</button></div></li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}
+    ${!st.ps.length ? '<button class="btn danger ghost block" id="cdDel">🗑 Eliminar cuadro</button>' : ''}`, m => {
+    const inB = $('#cdIn', m); if (inB) inB.onclick = () => pastoreoForm(null, cid, refresh);
+    const outB = $('#cdOut', m); if (outB) outB.onclick = () => pastoreoForm(st.open, cid, refresh, true);
+    $$('[data-pe]', m).forEach(b => b.onclick = () => pastoreoForm(DB.pastoreos.find(p => p.id === b.dataset.pe), cid, refresh));
+    const del = $('#cdDel', m);
+    if (del) del.onclick = async () => {
+      if (!(await askConfirm(`¿Seguro que querés eliminar el cuadro ${c.name}?`, { ok: 'Sí, eliminar', danger: true }))) return;
+      DB.cuadros = DB.cuadros.filter(x => x.id !== cid);
+      await save(); closeModal(); renderCuadros();
+    };
+  });
+}
+
+// p: movimiento a editar (null = nuevo); salidaNow: abre el form para cerrar el ingreso con fecha de hoy.
+// Al registrar uno nuevo se pueden tildar varios cuadros: se crea un movimiento igual para cada uno.
+function pastoreoForm(p, cid, after, salidaNow) {
+  const isNew = !p;
+  const pre = cid || p?.cuadroId;
+  const placesWith = DB.places.filter(pl => DB.cuadros.some(c => c.placeId === pl.id));
+  const picker = isNew
+    ? `<label>Cuadros <span class="muted">(tildá uno o varios)</span></label>
+       ${placesWith.map(pl => `<div class="small muted" style="margin:6px 0 4px">${esc(pl.name)}</div>
+         <div class="cpick">${DB.cuadros.filter(c => c.placeId === pl.id).sort(byName).map(c =>
+           `<label class="${cuadroState(c).open ? 'occ' : ''}"><input type="checkbox" class="pgChk" value="${c.id}" ${c.id === pre ? 'checked' : ''}><span>${esc(c.name)}</span></label>`).join('')}</div>`).join('')}
+       <p class="small muted" id="pgSel" style="margin:6px 0 0"></p>`
+    : `<label>Cuadro</label><select id="pgC">${placesWith.map(pl =>
+         `<optgroup label="${esc(pl.name)}">${DB.cuadros.filter(c => c.placeId === pl.id).sort(byName).map(c =>
+           `<option value="${c.id}" ${c.id === pre ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`).join('')}</select>`;
+  eventModal(`<h2>${isNew ? 'Ingreso de animales a cuadro' : salidaNow ? 'Salida de animales' : 'Editar movimiento'}</h2>
+    ${picker}
+    <label>Fecha de ingreso</label><input id="pgIn" type="date" value="${p?.ingreso || today()}">
+    <label>Fecha de salida <span class="muted">(vacía si siguen en el cuadro)</span></label><input id="pgOut" type="date" value="${p?.salida || (salidaNow ? today() : '')}">
+    <label>Cantidad de animales</label><input id="pgN" inputmode="numeric" value="${p?.cantidad ?? ''}" placeholder="Ej: 40">
+    <label>Observaciones</label><textarea id="pgObs" placeholder="Ej: estado de la pastura, lote, motivo…">${esc(p?.obs || '')}</textarea>
+    <button class="btn block" id="pgSave">Guardar</button>
+    ${isNew ? '' : delBtn('Eliminar este movimiento')}`, after, (m, back) => {
+    $('#pgN', m).addEventListener('input', e => e.target.value = onlyDigits(e.target.value));
+    if (salidaNow) setTimeout(() => $('#pgOut', m).focus(), 50);
+    const selected = () => isNew ? $$('.pgChk', m).filter(c => c.checked).map(c => c.value) : [$('#pgC', m).value].filter(Boolean);
+    const showSel = () => { const s = selected(); $('#pgSel', m).textContent = s.length ? `Seleccionados: ${s.map(id => cuadro(id).name).join(', ')}` : 'Ningún cuadro seleccionado'; };
+    if (isNew) { $$('.pgChk', m).forEach(c => c.onchange = showSel); showSel(); }
+    $('#pgSave', m).onclick = async () => {
+      const ids = selected(), ingreso = $('#pgIn', m).value, salida = $('#pgOut', m).value || null;
+      const n = $('#pgN', m).value ? parseInt($('#pgN', m).value, 10) : null;
+      if (!ids.length) return toast('Elegí al menos un cuadro');
+      if (!ingreso) return toast('Poné la fecha de ingreso');
+      if (salida && salida < ingreso) return toast('La salida no puede ser anterior al ingreso');
+      const busy = salida ? [] : ids.map(id => DB.pastoreos.find(x => x.cuadroId === id && x.id !== p?.id && !x.salida)).filter(Boolean);
+      if (busy.length && !(await askConfirm(`${busy.length === 1 ? 'El cuadro' : 'Los cuadros'} ${busy.map(o => `${cuadro(o.cuadroId).name} (desde ${fmt(o.ingreso)})`).join(', ')} ya ${busy.length === 1 ? 'tiene' : 'tienen'} animales sin salida registrada. ¿Registrar igual?`, { ok: 'Registrar igual' }))) return;
+      const data = { ingreso, salida, cantidad: n, obs: $('#pgObs', m).value.trim() };
+      if (isNew) ids.forEach(cuadroId => DB.pastoreos.push({ id: uid(), cuadroId, ...data }));
+      else Object.assign(p, data, { cuadroId: ids[0] });
+      const names = ids.map(id => cuadro(id).name).join(', ');
+      await save(); toast(salida ? `Salida registrada en ${names}` : `Ingreso registrado en ${names}`); back();
+    };
+    const del = $('#xDel', m);
+    if (del) del.onclick = async () => {
+      if (!(await askConfirm(`¿Seguro que querés eliminar el movimiento del cuadro ${cuadro(p.cuadroId)?.name} (${fmt(p.ingreso)} → ${p.salida ? fmt(p.salida) : 'sigue'})?`, { ok: 'Sí, eliminar', danger: true }))) return;
+      DB.pastoreos = DB.pastoreos.filter(x => x.id !== p.id);
+      await save(); toast('Movimiento eliminado'); back();
+    };
+  });
+}
+
+function cuadroForm(placeId) {
+  eventModal(`<h2>Agregar cuadro – ${esc(placeName(placeId))}</h2>
+    <label>Nombre</label><input id="cfN" placeholder="Ej: A9" autocapitalize="characters">
+    <button class="btn block" id="cfSave">Guardar</button>`, renderCuadros, (m, back) => {
+    $('#cfSave', m).onclick = async () => {
+      const name = $('#cfN', m).value.trim().toUpperCase();
+      if (!name) return toast('Poné un nombre');
+      if (DB.cuadros.some(c => c.placeId === placeId && c.name === name)) return toast('Ya existe ' + name);
+      DB.cuadros.push({ id: uid(), placeId, name });
+      await save(); back();
+    };
+  });
+}
+
+function exportCuadrosCSV(placeId) {
+  const hoy = today();
+  const list = DB.cuadros.filter(c => c.placeId === placeId).sort(byName);
+  const rows = [['Informe de cuadros', placeName(placeId)], ['Fecha', fmt(hoy)], [],
+    ['Cuadro', 'Estado', 'Ingreso actual', 'Animales', 'Última salida', 'Días desde la salida']];
+  list.forEach(c => { const st = cuadroState(c); rows.push([c.name, st.open ? 'Ocupado' : 'Libre', st.open ? fmt(st.open.ingreso) : '', st.open?.cantidad ?? '', st.lastOut ? fmt(st.lastOut.salida) : '', st.lastOut && !st.open ? daysBetween(st.lastOut.salida, hoy) : '']); });
+  rows.push([], ['MOVIMIENTOS'], ['Cuadro', 'Ingreso', 'Salida', 'Días', 'Animales', 'Observaciones']);
+  list.forEach(c => cuadroState(c).ps.sort((a, b) => a.ingreso.localeCompare(b.ingreso)).forEach(p =>
+    rows.push([c.name, fmt(p.ingreso), p.salida ? fmt(p.salida) : '', p.salida ? daysBetween(p.ingreso, p.salida) : '', p.cantidad ?? '', p.obs])));
+  downloadCSV(`cuadros-${slug(placeName(placeId))}-${hoy}`, rows);
+}
 
 // ================= BACKUP =================
 async function shareOrDownload(blob, name) {
