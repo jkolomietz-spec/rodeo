@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2f5d3a">
+  <title>Rodeo – Historia de animales</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="top">
+    <div class="stats">
+      <div class="stat"><span id="statActivos">0</span><small>Activos</small></div>
+      <div class="stat"><span id="statRelevados">–</span><small>Relevados sesión</small></div>
+      <div class="stat stat-session" id="statSesion"><span>Sin sesión</span><small>&nbsp;</small></div>
+    </div>
+  </header>
+
+  <main id="view"></main>
+
+  <nav id="tabs">
+    <button data-tab="sesion" class="active">📋<span>Sesión</span></button>
+    <button data-tab="animales">🐄<span>Animales</span></button>
+    <button data-tab="lugares">📍<span>Lugares</span></button>
+    <button data-tab="reportes">📊<span>Reportes</span></button>
+    <button data-tab="backup">☁️<span>Backup</span></button>
+  </nav>
+
+  <div id="modal" class="hidden"><div class="modal-box" id="modalBox"></div></div>
+  <div id="confirm" class="hidden"><div class="confirm-box" id="confirmBox"></div></div>
+  <div id="toast" class="hidden"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
