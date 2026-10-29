@@ -100,8 +100,13 @@ const session = (id) => DB.sessions.find(s => s.id === id);
 
 const lastPeriod = (a) => a.periods[a.periods.length - 1];
 const isActiveFlag = (a) => !!lastPeriod(a) && !lastPeriod(a).to;
-const isComplete = (a) => /^\d{4}$/.test(a.idv) && /^\d{1,14}$/.test(a.rfid || '');
-const isActive = (a) => isActiveFlag(a) && isComplete(a);           // activo = números completos + etiqueta activo
+// Identificación: N° de 4 dígitos, número largo (hasta 14) o texto (hasta 25). Alcanza con una.
+const ALIAS_MAX = 25;
+const normAlias = (s) => String(s ?? '').trim().replace(/\s+/g, ' ').slice(0, ALIAS_MAX);
+const isComplete = (a) => /^\d{4}$/.test(a.idv || '') || /^\d{1,14}$/.test(a.rfid || '') || !!normAlias(a.alias);
+const isActive = (a) => isActiveFlag(a) && isComplete(a);           // activo = alguna identificación + etiqueta activo
+const nom = (a) => a?.idv || a?.alias || a?.rfid || '?';            // cómo se muestra el animal
+const byAnimal = (a, b) => nom(a).localeCompare(nom(b), 'es', { numeric: true, sensitivity: 'base' });
 const currentPlace = (a) => a.places.length ? a.places[a.places.length - 1].placeId : null;
 const placeAt = (a, d) => { let p = null; for (const e of a.places) if (e.date <= d) p = e.placeId; return p ?? (a.places[0]?.placeId || null); };
 const activeAt = (a, d) => isComplete(a) && a.periods.some(p => p.from <= d && (!p.to || p.to >= d)); // el día de la baja todavía cuenta
@@ -112,15 +117,35 @@ function activeAnimals(placeId) {
 function sessionRecords(sid) { return DB.records.filter(r => r.sessionId === sid); }
 function sessionAnimalIds(sid) { return [...new Set(sessionRecords(sid).map(r => r.animalId))]; }
 
+// Busca por N° de 4 dígitos, número largo o texto (exacto; si no hay, por parte del texto)
 function findAnimals(q) {
-  q = onlyDigits(q);
+  q = normAlias(q);
   if (!q) return [];
-  if (q.length <= 4) { const k = q.padStart(4, '0'); return DB.animals.filter(a => a.idv === k); }
-  return DB.animals.filter(a => a.rfid === q);
+  const t = q.toLowerCase();
+  const byAlias = DB.animals.filter(a => normAlias(a.alias).toLowerCase() === t);
+  if (!/^\d+$/.test(q)) return byAlias.length ? byAlias : DB.animals.filter(a => normAlias(a.alias).toLowerCase().includes(t));
+  const byNum = q.length <= 4 ? DB.animals.filter(a => a.idv === q.padStart(4, '0'))
+    : DB.animals.filter(a => a.rfid === q || (q.length <= 14 && a.rfid === q.padStart(14, '0')));
+  return [...new Set([...byNum, ...byAlias])];
 }
 function idvTakenByActive(idv, exceptId) {
-  return DB.animals.find(a => a.id !== exceptId && a.idv === idv && isActiveFlag(a));
+  return idv && DB.animals.find(a => a.id !== exceptId && a.idv === idv && isActiveFlag(a));
 }
+function aliasTaken(alias, exceptId) {
+  const t = normAlias(alias).toLowerCase();
+  return t && DB.animals.find(a => a.id !== exceptId && normAlias(a.alias).toLowerCase() === t && isActiveFlag(a));
+}
+
+// ---------- lugar de trabajo ----------
+// '' = todos los lugares. Con una sesión abierta manda el lugar de la sesión.
+const workPlace = () => { const id = DB.settings.workPlace || ''; return place(id) ? id : ''; };
+const curPlace = () => { const s = openSession(); return s ? (s.placeId || '') : workPlace(); };
+async function setPlace(id) {
+  DB.settings.workPlace = id || '';
+  const s = openSession(); if (s) s.placeId = id || null;
+  await save();
+}
+const inPlace = (a, pl) => !pl || currentPlace(a) === pl;
 function rfidTaken(rfid, exceptId) {
   return rfid && DB.animals.find(a => a.id !== exceptId && a.rfid === rfid && isActiveFlag(a));
 }
@@ -176,18 +201,22 @@ function animalTags(a) {
   return t.join(' ');
 }
 function animalLine(a) {
-  return `<div class="row"><span class="num">${esc(a.idv)}</span>
+  const extra = [a.rfid && nom(a) !== a.rfid ? esc(a.rfid) : '', a.alias && nom(a) !== a.alias ? '“' + esc(a.alias) + '”' : ''].filter(Boolean);
+  return `<div class="row"><span class="num">${esc(nom(a))}</span>
     <span class="tag grey">${a.sex ? SEX[a.sex] : '¿sexo?'}</span>${animalTags(a)}
     <span class="right small muted">${esc(placeName(currentPlace(a)))}</span></div>
-    <div class="rfid">${a.rfid ? esc(a.rfid) : '<i>sin número de 14 dígitos</i>'}</div>`;
+    <div class="rfid">${extra.length ? extra.join(' · ') : '<i>sin otra identificación</i>'}</div>`;
 }
 
 // ---------- header ----------
 function renderHeader() {
-  const s = openSession();
-  const act = activeAnimals(s?.placeId);
+  const s = openSession(), pl = curPlace();
+  const act = activeAnimals(pl);
   $('#statActivos').textContent = act.length;
-  $('#statActivos').nextElementSibling.textContent = s?.placeId ? 'Activos ' + placeName(s.placeId) : 'Activos';
+  $('#statActivos').nextElementSibling.textContent = pl ? 'Activos ' + placeName(pl) : 'Activos';
+  const wp = $('#workPlace');
+  wp.innerHTML = placeOptions(pl, 'Todos los lugares');
+  wp.title = s ? 'Lugar de la sesión abierta' : 'Lugar para sesión, animales y reportes';
   $('#statRelevados').textContent = s ? sessionAnimalIds(s.id).length : '–';
   $('#statSesion').innerHTML = s
     ? `<span>${esc(s.obs)}</span><small>${fmt(s.date)}${s.placeId ? ' · ' + esc(placeName(s.placeId)) : ''}</small>`
@@ -202,6 +231,12 @@ function openModal(html, bind) {
 }
 function closeModal() { $('#modal').classList.add('hidden'); $('#modalBox').innerHTML = ''; }
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+$('#workPlace').onchange = async e => {
+  await setPlace(e.target.value);
+  const s = openSession();
+  toast(s ? `Sesión "${s.obs}": ${e.target.value ? placeName(e.target.value) : 'todos los lugares'}` : `Trabajando en ${e.target.value ? placeName(e.target.value) : 'todos los lugares'}`);
+  render();
+};
 
 // ---------- navegación ----------
 let tab = 'sesion';
@@ -241,9 +276,10 @@ function renderSesion() {
   v.innerHTML = `
     ${backupNotice()}
     <div class="card">
-      <label for="q" style="margin-top:0">N° de animal (4 dígitos) o número largo (hasta 14)</label>
+      <label for="q" style="margin-top:0">N° de animal (4 dígitos), número largo (14) o texto (hasta ${ALIAS_MAX})</label>
       <div class="row">
-        <input id="q" class="big grow" inputmode="numeric" autocomplete="off" maxlength="14" value="${esc(lookup.q)}" placeholder="0000">
+        <input id="q" class="big grow" inputmode="${lookup.kb || 'numeric'}" autocomplete="off" maxlength="${ALIAS_MAX}" value="${esc(lookup.q)}" placeholder="0000" style="min-width:0">
+        <button class="btn ghost sm" id="btnKb" title="Cambiar teclado">${lookup.kb === 'text' ? '123' : 'ABC'}</button>
         <button class="btn" id="btnBuscar" style="padding:16px">Buscar</button>
       </div>
     </div>
@@ -252,7 +288,7 @@ function renderSesion() {
       <div class="row"><h3 style="margin:0">Relevados en esta sesión (${relevados.length})</h3>
         <button class="btn ghost sm right" id="btnFaltan">Faltan ${faltan.length}</button></div>
       ${recentAnimals.length ? `<ul class="list">${recentAnimals.slice(0, 30).map(r => { const a = animal(r.animalId); return a ? `
-        <li class="click" data-open="${a.id}"><div class="row"><span class="num">${esc(a.idv)}</span>
+        <li class="click" data-open="${a.id}"><div class="row"><span class="num">${esc(nom(a))}</span>
         <span class="small muted grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.text || '(sin observación)')}</span>
         <span class="small muted">${fmtDT(r.ts).slice(11)}</span></div></li>` : ''; }).join('')}</ul>` : '<p class="muted small">Todavía no se relevó ningún animal.</p>'}
     </div>
@@ -262,11 +298,15 @@ function renderSesion() {
     </div>`;
 
   const q = $('#q');
-  const doSearch = () => { lookup.q = onlyDigits(q.value); lookup.animalId = null; showLookup(); };
+  const doSearch = () => { lookup.q = normAlias(q.value); lookup.animalId = null; showLookup(); };
   $('#btnBuscar').onclick = doSearch;
+  $('#btnKb').onclick = () => {
+    lookup.kb = lookup.kb === 'text' ? 'numeric' : 'text';
+    q.inputMode = lookup.kb; $('#btnKb').textContent = lookup.kb === 'text' ? '123' : 'ABC';
+    q.blur(); setTimeout(() => q.focus(), 30);
+  };
   q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
-  q.addEventListener('input', () => { q.value = onlyDigits(q.value); });
-  $$('[data-open]', v).forEach(li => li.onclick = () => { lookup = { q: animal(li.dataset.open).idv, animalId: li.dataset.open }; q.value = lookup.q; showLookup(); window.scrollTo(0, 0); });
+  $$('[data-open]', v).forEach(li => li.onclick = () => { lookup = { ...lookup, q: nom(animal(li.dataset.open)), animalId: li.dataset.open }; q.value = lookup.q; showLookup(); window.scrollTo(0, 0); });
   $('#btnFaltan').onclick = () => showFaltan(s, faltan);
   $('#btnCerrar').onclick = () => closeSession(s);
   $('#btnEditSes').onclick = () => editSession(s);
@@ -302,7 +342,8 @@ function renderNewSession(v) {
       <label>Observación de la sesión</label>
       <input id="sObs" placeholder="Ej: RETIRO DIU" autocapitalize="characters" list="obsList">
       <datalist id="obsList">${[...new Set(DB.sessions.map(s => s.obs))].map(o => `<option value="${esc(o)}">`).join('')}</datalist>
-      <label>Lugar</label><select id="sPlace">${placeOptions('', 'Todos los lugares')}</select>
+      <label>Lugar</label><select id="sPlace">${placeOptions(workPlace(), 'Todos los lugares')}</select>
+      <p class="small muted" style="margin:4px 0 0">Con un lugar elegido solo se trabaja sobre los animales de ese lugar; con "Todos" sobre cualquiera.</p>
       <button class="btn block" id="sStart">Iniciar sesión</button>
     </div>
     ${past.length ? `<div class="card"><h3 style="margin-top:0">Sesiones anteriores</h3><ul class="list">${past.map(s => `
@@ -312,11 +353,13 @@ function renderNewSession(v) {
     const obs = $('#sObs').value.trim().toUpperCase();
     if (!obs) return toast('Escribí la observación de la sesión');
     DB.sessions.push({ id: uid(), date: $('#sDate').value || today(), obs, placeId: $('#sPlace').value || null, open: true, createdAt: new Date().toISOString(), closedAt: null });
+    DB.settings.workPlace = $('#sPlace').value;
     lookup = { q: '', animalId: null };
     await save(); render();
   };
   $$('[data-reopen]', v).forEach(b => b.onclick = async () => {
-    session(b.dataset.reopen).open = true; lookup = { q: '', animalId: null };
+    const s = session(b.dataset.reopen);
+    s.open = true; DB.settings.workPlace = s.placeId || ''; lookup = { q: '', animalId: null };
     await save(); render();
   });
 }
@@ -332,6 +375,7 @@ function editSession(s) {
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     $('#eSave', m).onclick = async () => {
       s.date = $('#eDate', m).value || s.date; s.obs = $('#eObs', m).value.trim().toUpperCase() || s.obs; s.placeId = $('#ePlace', m).value || null;
+      if (s.open) DB.settings.workPlace = s.placeId || '';
       await save(); closeModal(); render();
     };
     const del = $('#eDel', m);
@@ -355,21 +399,21 @@ async function closeSession(s) {
 
 // Lista de activos sin relevar: se pueden tildar varios y guardar la misma observación para todos.
 function showFaltan(s, faltan) {
-  faltan.sort((a, b) => a.idv.localeCompare(b.idv));
+  faltan.sort(byAnimal);
   openModal(`<div class="row"><h2 class="grow" style="margin:0">Faltan relevar (${faltan.length})</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
     <p class="small muted">Activos${s.placeId ? ' en ' + esc(placeName(s.placeId)) : ''} que no tienen registro en esta sesión. Tildá uno o varios para cargarles la misma observación; tocá › para abrir uno.</p>
     ${faltan.length ? `
     <label class="row sel-all"><input type="checkbox" id="fAll"> <span class="grow">Seleccionar todos</span> <b id="fCount">0 seleccionados</b></label>
     <ul class="list">${faltan.map(a => `
       <li class="row sel-row"><label class="row grow" style="margin:0;color:var(--ink)"><input type="checkbox" class="fChk" value="${a.id}">
-        <span class="num">${esc(a.idv)}</span><span class="tag grey">${a.sex ? SEX[a.sex] : '¿sexo?'}</span><span class="small muted grow" style="text-align:right">${esc(placeName(currentPlace(a)))}</span></label>
+        <span class="num">${esc(nom(a))}</span><span class="tag grey">${a.sex ? SEX[a.sex] : '¿sexo?'}</span><span class="small muted grow" style="text-align:right">${esc(placeName(currentPlace(a)))}</span></label>
         <button class="btn ghost sm" data-go="${a.id}" aria-label="Abrir">›</button></li>`).join('')}</ul>
     <div class="sel-bar">
       <label style="margin-top:0">Observación para los seleccionados (${esc(s.obs)})</label>
       <textarea id="fObs" placeholder="Ej: no se presentó, en otro lote… (vacío = solo marcar como relevados)"></textarea>
       <button class="btn block" id="fSave" disabled>Guardar para 0 seleccionados</button>
     </div>` : '<p class="muted">¡Están todos!</p>'}`, m => {
-    $$('[data-go]', m).forEach(b => b.onclick = () => { closeModal(); lookup = { q: animal(b.dataset.go).idv, animalId: b.dataset.go }; render(); });
+    $$('[data-go]', m).forEach(b => b.onclick = () => { closeModal(); lookup = { ...lookup, q: nom(animal(b.dataset.go)), animalId: b.dataset.go }; render(); });
     if (!faltan.length) return;
     const chks = $$('.fChk', m);
     const sel = () => chks.filter(c => c.checked).map(c => c.value);
@@ -385,7 +429,7 @@ function showFaltan(s, faltan) {
     $('#fSave', m).onclick = async () => {
       const ids = sel(), text = $('#fObs', m).value.trim();
       if (!ids.length) return;
-      if (!(await askConfirm(`¿Guardar ${text ? `"${text}"` : 'como relevados (sin observación)'} para ${ids.length} animal${ids.length === 1 ? '' : 'es'}?\n\n${ids.map(id => animal(id).idv).join(', ')}`, { ok: 'Guardar' }))) return;
+      if (!(await askConfirm(`¿Guardar ${text ? `"${text}"` : 'como relevados (sin observación)'} para ${ids.length} animal${ids.length === 1 ? '' : 'es'}?\n\n${ids.map(id => nom(animal(id))).join(', ')}`, { ok: 'Guardar' }))) return;
       const ts = new Date().toISOString();
       ids.forEach(id => DB.records.push({ id: uid(), sessionId: s.id, animalId: id, kg: null, text, ts }));
       await save();
@@ -406,10 +450,12 @@ function showLookup() {
   if (!a) {
     const found = findAnimals(lookup.q);
     const act = found.filter(isActiveFlag);
+    const actHere = s.placeId ? act.filter(x => inPlace(x, s.placeId)) : act;
     if (act.length === 1) a = act[0];
+    else if (actHere.length === 1) a = actHere[0];
     else if (found.length) {
       box.innerHTML = `<div class="card"><h3 style="margin-top:0">${act.length ? 'Coincidencias' : 'Solo hay animales inactivos con ese número'}</h3>
-        <ul class="list">${found.map(x => `<li class="click" data-pick="${x.id}">${animalLine(x)}</li>`).join('')}</ul>
+        <ul class="list">${found.map(x => `<li class="click ${inPlace(x, s.placeId) ? '' : 'otro-lugar'}" data-pick="${x.id}">${animalLine(x)}</li>`).join('')}</ul>
         <button class="btn ghost block" id="btnNew">Dar de alta uno nuevo con este número</button></div>`;
       $$('[data-pick]', box).forEach(li => li.onclick = () => { lookup.animalId = li.dataset.pick; showLookup(); });
       $('#btnNew', box).onclick = () => registerAnimal(lookup.q);
@@ -423,12 +469,40 @@ function showLookup() {
   }
   lookup.animalId = a.id;
   const recsHere = DB.records.filter(r => r.animalId === a.id && r.sessionId === s.id);
+  // sesión de un lugar: un animal de otro lugar se marca en amarillo; al seleccionarlo se lo trae
+  // al lugar de la sesión (queda el traslado en su historia) y recién ahí se le cargan datos
+  if (!inPlace(a, s.placeId)) {
+    const from = placeName(currentPlace(a)), to = placeName(s.placeId);
+    box.innerHTML = `
+      <div class="card otro-lugar">
+        ${animalLine(a)}
+        <div class="otro-aviso">⚠️ Figura en <b>${esc(from)}</b>, no en <b>${esc(to)}</b>.</div>
+        <button class="btn block" id="btnTraer">Seleccionar y pasar a ${esc(to)}</button>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost grow" id="btnFicha">Ficha</button>
+          <button class="btn ghost grow" id="btnOtro">Buscar otro</button>
+        </div>
+      </div>
+      <div class="card"><h3 style="margin-top:0">Historia</h3>${timelineHTML(a, s.id)}</div>`;
+    $('#btnFicha').onclick = () => animalDetail(a.id, () => renderSesion());
+    $('#btnOtro').onclick = () => { lookup = { ...lookup, q: '', animalId: null }; renderSesion(); };
+    $('#btnTraer').onclick = async () => {
+      // fecha de la sesión, salvo que el último movimiento sea posterior
+      const last = a.places[a.places.length - 1]?.date || '';
+      a.places.push({ placeId: s.placeId, date: last > s.date ? last : s.date, kg: null, obs: `Desde ${from} (sesión ${s.obs})` });
+      await save();
+      toast(`${nom(a)}: de ${from} a ${to} ✓`);
+      showLookup();
+    };
+    bindTimeline(box, () => renderSesion());
+    return;
+  }
   box.innerHTML = `
     <div class="card">
       ${animalLine(a)}
       ${recsHere.length ? '<div class="notice" style="margin:10px 0 0">Ya relevado en esta sesión. Podés agregar otra observación.</div>' : ''}
       ${!isActiveFlag(a) ? '<div class="notice" style="margin:10px 0 0">Este animal está dado de baja.</div>' : ''}
-      ${isActiveFlag(a) && !isComplete(a) ? '<div class="notice" style="margin:10px 0 0">Falta el número de 14 dígitos: no cuenta como activo. Tocá <b>Ficha</b> para completarlo.</div>' : ''}
+      ${isActiveFlag(a) && !isComplete(a) ? '<div class="notice" style="margin:10px 0 0">Falta la identificación: no cuenta como activo. Tocá <b>Ficha</b> para completarla.</div>' : ''}
       ${!a.sex ? '<div class="notice" style="margin:10px 0 0">Falta indicar si es macho o hembra.</div>' : ''}
       <label>Peso (kg)</label>${kgInput('obsKg')}
       <label>Observación de hoy (${esc(s.obs)})</label>
@@ -444,8 +518,8 @@ function showLookup() {
     if (Number.isNaN(kg)) return toast('Peso inválido');
     DB.records.push({ id: uid(), sessionId: s.id, animalId: a.id, kg, text: $('#obsTxt').value.trim(), ts: new Date().toISOString() });
     await save();
-    toast(`✓ ${a.idv} guardado`);
-    lookup = { q: '', animalId: null };
+    toast(`✓ ${nom(a)} guardado`);
+    lookup = { ...lookup, q: '', animalId: null };
     renderSesion();
   };
   $('#btnFicha').onclick = () => animalDetail(a.id, () => renderSesion());
@@ -463,7 +537,7 @@ const delBtn = (label) => `<button class="btn danger ghost block" id="xDel">🗑
 function editRecord(rid, after) {
   const r = DB.records.find(x => x.id === rid); if (!r) return;
   const s = session(r.sessionId), a = animal(r.animalId);
-  eventModal(`<h2>Editar observación</h2><p class="small muted">Animal ${esc(a?.idv)} · Sesión ${esc(s?.obs)} (${fmt(s?.date)})</p>
+  eventModal(`<h2>Editar observación</h2><p class="small muted">Animal ${esc(nom(a))} · Sesión ${esc(s?.obs)} (${fmt(s?.date)})</p>
     <label>Fecha</label><input id="rDate" type="date" value="${recDate(r)}">
     <label>Peso (kg)</label>${kgInput('rKg', r.kg)}
     <label>Observación</label><textarea id="rTxt">${esc(r.text)}</textarea>
@@ -478,7 +552,7 @@ function editRecord(rid, after) {
       await save(); toast('Registro actualizado'); back();
     };
     $('#xDel', m).onclick = async () => {
-      if (!(await askConfirm(`¿Seguro que querés eliminar este registro del animal ${a?.idv}?\n\n${fmt(recDate(r))} · ${s?.obs || ''}\n${r.text || '(sin observación)'}\n\nNo se puede deshacer.`, { ok: 'Sí, eliminar', danger: true }))) return;
+      if (!(await askConfirm(`¿Seguro que querés eliminar este registro del animal ${nom(a)}?\n\n${fmt(recDate(r))} · ${s?.obs || ''}\n${r.text || '(sin observación)'}\n\nNo se puede deshacer.`, { ok: 'Sí, eliminar', danger: true }))) return;
       DB.records = DB.records.filter(x => x.id !== rid);
       await save(); toast('Registro eliminado'); back();
     };
@@ -487,7 +561,7 @@ function editRecord(rid, after) {
 
 function editPlaceEntry(a, i, after) {
   const e = a.places[i];
-  eventModal(`<h2>${i === 0 ? 'Ingreso' : 'Traslado'} – ${esc(a.idv)}</h2>
+  eventModal(`<h2>${i === 0 ? 'Ingreso' : 'Traslado'} – ${esc(nom(a))}</h2>
     <label>Lugar</label><select id="peP">${placeOptions(e.placeId)}</select>
     <label>Fecha</label><input id="peD" type="date" value="${e.date}">
     <label>Peso (kg)</label>${kgInput('peKg', e.kg)}
@@ -513,7 +587,7 @@ function editPlaceEntry(a, i, after) {
 
 function editPeriodFrom(a, i, after) {
   const p = a.periods[i], prev = a.periods[i - 1];
-  eventModal(`<h2>${i === 0 ? 'Fecha de activación' : 'Reactivación'} – ${esc(a.idv)}</h2>
+  eventModal(`<h2>${i === 0 ? 'Fecha de activación' : 'Reactivación'} – ${esc(nom(a))}</h2>
     <label>Fecha</label><input id="pfD" type="date" value="${p.from}">
     <button class="btn block" id="pfSave">Guardar</button>
     ${i > 0 ? delBtn('Eliminar esta reactivación') : '<p class="small muted">Para borrar el animal por completo usá <b>Eliminar animal</b> en su ficha.</p>'}`, after, (m, back) => {
@@ -534,7 +608,7 @@ function editPeriodFrom(a, i, after) {
 
 function editPeriodTo(a, i, after) {
   const p = a.periods[i], isLast = i === a.periods.length - 1;
-  eventModal(`<h2>Baja – ${esc(a.idv)}</h2>
+  eventModal(`<h2>Baja – ${esc(nom(a))}</h2>
     <label>Motivo</label>
     <div class="seg" id="ptR">${Object.entries(REASONS).map(([k, v]) => `<button data-v="${k}" class="${p.reason === k ? 'on' : ''}">${v}</button>`).join('')}</div>
     <label>Aclaración</label><input id="ptDet" value="${esc(p.detail || '')}">
@@ -554,8 +628,9 @@ function editPeriodTo(a, i, after) {
     };
     const del = $('#xDel', m);
     if (del) del.onclick = async () => {
-      if (idvTakenByActive(a.idv, a.id)) return toast(`Ya hay otro animal activo con el N° ${a.idv}`);
-      if (!(await askConfirm(`¿Seguro que querés anular la baja (${REASONS[p.reason]}, ${fmt(p.to)})?\nEl animal ${a.idv} vuelve a estar activo.`, { ok: 'Sí, anular', danger: true }))) return;
+      if (idvTakenByActive(a.idv, a.id)) return toast(`Ya hay otro animal activo con el N° ${nom(a)}`);
+      if (aliasTaken(a.alias, a.id)) return toast(`Ya hay otro animal activo identificado como "${a.alias}"`);
+      if (!(await askConfirm(`¿Seguro que querés anular la baja (${REASONS[p.reason]}, ${fmt(p.to)})?\nEl animal ${nom(a)} vuelve a estar activo.`, { ok: 'Sí, anular', danger: true }))) return;
       p.to = null; delete p.reason; delete p.detail;
       await save(); toast('Baja anulada'); back();
     };
@@ -564,28 +639,30 @@ function editPeriodTo(a, i, after) {
 
 function deleteAnimal(a, after) {
   const n = DB.records.filter(r => r.animalId === a.id).length;
-  askConfirm(`¿Seguro que querés ELIMINAR el animal ${a.idv}?\nSe borra toda su historia (${n} registros). No se puede deshacer.\n\nSi fue vendido o murió, usá "Dar de baja".`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
+  askConfirm(`¿Seguro que querés ELIMINAR el animal ${nom(a)}?\nSe borra toda su historia (${n} registros). No se puede deshacer.\n\nSi fue vendido o murió, usá "Dar de baja".`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
     if (!ok) return;
     DB.animals = DB.animals.filter(x => x.id !== a.id);
     DB.records = DB.records.filter(r => r.animalId !== a.id);
     if (lookup.animalId === a.id) lookup = { q: '', animalId: null };
-    await save(); closeModal(); toast(`Animal ${a.idv} eliminado`); after && after();
+    await save(); closeModal(); toast(`Animal ${nom(a)} eliminado`); after && after();
   });
 }
 
 // ---------- alta / edición de animal ----------
 function registerAnimal(q, after) {
-  q = onlyDigits(q);
+  q = normAlias(q);
   const s = openSession();
-  const pre4 = q.length <= 4 ? q.padStart(4, '0') : '';
-  const pre14 = q.length > 4 ? q : '';
-  animalForm({ title: 'Alta de animal', idv: pre4, rfid: pre14, sex: '', placeId: s?.placeId || DB.places[0]?.id, date: s?.date || today(), isNew: true }, async (f) => {
-    const a = { id: uid(), idv: f.idv, rfid: f.rfid, sex: f.sex, periods: [{ from: f.date, to: null }], places: [{ placeId: f.placeId, date: f.date, kg: f.kg, obs: f.obs }], createdAt: new Date().toISOString() };
+  const digits = /^\d+$/.test(q);
+  const pre4 = digits && q.length <= 4 ? q.padStart(4, '0') : '';
+  const pre14 = digits && q.length > 4 ? q : '';
+  const preTxt = q && !digits ? q : '';
+  animalForm({ title: 'Alta de animal', idv: pre4, rfid: pre14, alias: preTxt, sex: '', placeId: s?.placeId || curPlace() || DB.places[0]?.id, date: s?.date || today(), isNew: true }, async (f) => {
+    const a = { id: uid(), idv: f.idv, rfid: f.rfid, alias: f.alias, sex: f.sex, periods: [{ from: f.date, to: null }], places: [{ placeId: f.placeId, date: f.date, kg: f.kg, obs: f.obs }], createdAt: new Date().toISOString() };
     DB.animals.push(a);
     await save();
-    toast(`Animal ${a.idv} dado de alta`);
+    toast(`Animal ${nom(a)} dado de alta`);
     if (after) return after(a);
-    lookup = { q: a.idv, animalId: a.id };
+    lookup = { ...lookup, q: nom(a), animalId: a.id };
     render();
   });
 }
@@ -593,10 +670,13 @@ function registerAnimal(q, after) {
 function animalForm(d, onSave) {
   openModal(`
     <h2>${esc(d.title)}</h2>
+    <p class="small muted" style="margin:0">Cargá al menos una identificación; podés cargar las tres.</p>
     <label>Número identificatorio (4 dígitos)</label>
     <input id="fIdv" class="big" inputmode="numeric" maxlength="4" value="${esc(d.idv)}">
     <label>Número largo (hasta 14 dígitos)</label>
     <input id="fRfid" inputmode="numeric" maxlength="14" value="${esc(d.rfid)}" placeholder="Ej: 00032123456789" style="font-size:20px;letter-spacing:1px">
+    <label>Identificación en texto (hasta ${ALIAS_MAX} caracteres)</label>
+    <input id="fAlias" maxlength="${ALIAS_MAX}" value="${esc(d.alias)}" placeholder="Ej: Overa cara blanca">
     <label>Sexo</label>
     <div class="seg" id="fSex"><button data-v="M" class="${d.sex === 'M' ? 'on' : ''}">♂ Macho</button><button data-v="H" class="${d.sex === 'H' ? 'on' : ''}">♀ Hembra</button></div>
     ${d.isNew ? `
@@ -605,7 +685,6 @@ function animalForm(d, onSave) {
       <label>Peso de ingreso (kg)</label>${kgInput('fKg')}
       <label>Observación de ingreso</label><input id="fObs" placeholder="Opcional">` : `
       <label>Fecha de activación</label><input id="fDate" type="date" value="${d.date}">`}
-    <p class="small muted">Para contar como <b>activo</b> el animal necesita los dos números.</p>
     <button class="btn block" id="fSave">Guardar</button>
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     let sex = d.sex;
@@ -614,20 +693,21 @@ function animalForm(d, onSave) {
     $('#fSave', m).onclick = async () => {
       const idv = onlyDigits($('#fIdv', m).value);
       const rfid = onlyDigits($('#fRfid', m).value);
-      if (!/^\d{4}$/.test(idv)) return toast('El número identificatorio debe tener 4 dígitos');
+      const alias = normAlias($('#fAlias', m).value);
+      if (!idv && !rfid && !alias) return toast('Cargá el N° de 4 dígitos, el número largo o un texto');
+      if (idv && !/^\d{4}$/.test(idv)) return toast('El número identificatorio debe tener 4 dígitos');
       if (rfid.length > 14) return toast('El número largo tiene hasta 14 dígitos');
       if (!sex) return toast('Indicá si es macho o hembra');
-      const dup = idvTakenByActive(idv, d.id);
-      if (dup) return toast(`Ya hay un animal activo con el N° ${idv}`);
+      if (idvTakenByActive(idv, d.id)) return toast(`Ya hay un animal activo con el N° ${idv}`);
       if (rfidTaken(rfid, d.id)) return toast('Ese número largo ya lo tiene otro animal activo');
-      if (!rfid && !(await askConfirm('Sin el número largo el animal queda INCOMPLETO y no cuenta como activo. ¿Guardar igual?', { ok: 'Guardar igual' }))) return;
+      if (aliasTaken(alias, d.id)) return toast(`Ya hay un animal activo identificado como "${alias}"`);
       const kg = $('#fKg', m) ? parseKg($('#fKg', m).value) : null;
       if (Number.isNaN(kg)) return toast('Peso inválido');
-      const vals = { idv, rfid, sex, placeId: $('#fPlace', m)?.value, date: $('#fDate', m).value || today(), kg, obs: $('#fObs', m)?.value.trim() || '' };
+      const vals = { idv, rfid, alias, sex, placeId: $('#fPlace', m)?.value, date: $('#fDate', m).value || today(), kg, obs: $('#fObs', m)?.value.trim() || '' };
       closeModal();
       await onSave(vals);
     };
-    setTimeout(() => (d.idv ? (d.rfid ? null : $('#fRfid', m)) : $('#fIdv', m))?.focus(), 50);
+    setTimeout(() => (d.idv || d.rfid || d.alias ? null : $('#fIdv', m))?.focus(), 50);
   });
 }
 
@@ -636,7 +716,7 @@ function animalDetail(id, after) {
   const refresh = () => { after && after(); animalDetail(id, after); };
   const p = lastPeriod(a), lw = lastWeight(a);
   openModal(`
-    <div class="row"><h2 class="grow" style="margin:0">Animal ${esc(a.idv)}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    <div class="row"><h2 class="grow" style="margin:0">Animal ${esc(nom(a))}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
     <div style="margin:8px 0">${animalLine(a)}</div>
     <div class="kpis" style="grid-template-columns:1fr 1fr">
       <div class="kpi"><b class="d">${fmt(p?.from)}</b><small>Activado</small></div>
@@ -656,8 +736,8 @@ function animalDetail(id, after) {
     <p class="small muted">Tocá ✎ en cualquier fila para corregir la fecha o eliminarla.</p>
     <button class="btn danger ghost block" id="dDelete">🗑 Eliminar animal (carga errónea)</button>`, m => {
     $('#dDelete', m).onclick = () => deleteAnimal(a, after);
-    $('#dEdit', m).onclick = () => animalForm({ title: 'Editar animal', id: a.id, idv: a.idv, rfid: a.rfid, sex: a.sex, date: p.from }, async f => {
-      Object.assign(a, { idv: f.idv, rfid: f.rfid, sex: f.sex }); p.from = f.date;
+    $('#dEdit', m).onclick = () => animalForm({ title: 'Editar animal', id: a.id, idv: a.idv, rfid: a.rfid, alias: a.alias || '', sex: a.sex, date: p.from }, async f => {
+      Object.assign(a, { idv: f.idv, rfid: f.rfid, alias: f.alias, sex: f.sex }); p.from = f.date;
       await save(); refresh();
     });
     $('#dMove', m).onclick = () => moveAnimals([a.id], refresh);
@@ -669,7 +749,7 @@ function animalDetail(id, after) {
 }
 
 function deactivate(a, after) {
-  openModal(`<h2>Dar de baja – ${esc(a.idv)}</h2>
+  openModal(`<h2>Dar de baja – ${esc(nom(a))}</h2>
     <label>Motivo</label>
     <div class="seg" id="bR"><button data-v="vendido">Vendido</button><button data-v="muerto">Muerto</button><button data-v="otro">Otro</button></div>
     <label>Aclaración <span id="bReq"></span></label><input id="bDet" placeholder="Ej: comprador, causa, etc.">
@@ -686,19 +766,20 @@ function deactivate(a, after) {
       const p = lastPeriod(a);
       if (date < p.from) return toast('La fecha de baja es anterior a la activación');
       Object.assign(p, { to: date, reason, detail });
-      await save(); closeModal(); toast(`${a.idv} dado de baja`); after && after();
+      await save(); closeModal(); toast(`${nom(a)} dado de baja`); after && after();
     };
   });
 }
 
 function reactivate(a, after) {
-  openModal(`<h2>Reactivar – ${esc(a.idv)}</h2>
+  openModal(`<h2>Reactivar – ${esc(nom(a))}</h2>
     <label>Fecha de activación</label><input id="rDate" type="date" value="${today()}">
     <label>Lugar</label><select id="rPlace">${placeOptions(currentPlace(a))}</select>
     <button class="btn block" id="rSave">Reactivar</button>
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     $('#rSave', m).onclick = async () => {
-      if (idvTakenByActive(a.idv, a.id)) return toast(`Ya hay otro animal activo con el N° ${a.idv}`);
+      if (idvTakenByActive(a.idv, a.id)) return toast(`Ya hay otro animal activo con el N° ${nom(a)}`);
+      if (aliasTaken(a.alias, a.id)) return toast(`Ya hay otro animal activo identificado como "${a.alias}"`);
       const date = $('#rDate', m).value || today();
       a.periods.push({ from: date, to: null });
       const pl = $('#rPlace', m).value;
@@ -709,10 +790,10 @@ function reactivate(a, after) {
 }
 
 // kgs: pesos por animal {id: kg} cuando se traslada en grupo desde Lugares
-function moveAnimals(ids, after, kgs = {}) {
+function moveAnimals(ids, after, kgs = {}, dest) {
   const first = animal(ids[0]), single = ids.length === 1;
-  openModal(`<h2>Trasladar ${single ? 'animal ' + esc(first.idv) : ids.length + ' animales'}</h2>
-    <label>Destino</label><select id="mTo">${placeOptions(single ? currentPlace(first) : '')}</select>
+  openModal(`<h2>Trasladar ${single ? 'animal ' + esc(nom(first)) : ids.length + ' animales'}</h2>
+    <label>Destino</label><select id="mTo">${placeOptions(dest || (single ? currentPlace(first) : ''))}</select>
     <label>Fecha del traslado</label><input id="mDate" type="date" value="${openSession()?.date || today()}">
     ${single ? `<label>Peso (kg)</label>${kgInput('mKg', kgs[first.id])}` : `<p class="small muted">Pesos cargados: ${Object.keys(kgs).length} de ${ids.length}</p>`}
     <label>Observación${single ? '' : ' (para todos)'}</label><textarea id="mObs" placeholder="Ej: motivo del traslado, estado…"></textarea>
@@ -730,22 +811,23 @@ function moveAnimals(ids, after, kgs = {}) {
 }
 
 // ================= ANIMALES =================
-let animFilter = { st: 'activos', place: '', q: '' };
+let animFilter = { st: 'activos', q: '' };
 function renderAnimales() {
   const v = $('#view');
-  const f = animFilter;
+  const f = animFilter, pl = curPlace();
   let list = DB.animals.filter(a =>
     (f.st === 'todos') || (f.st === 'activos' && isActive(a)) || (f.st === 'inactivos' && !isActiveFlag(a)) || (f.st === 'incompletos' && isActiveFlag(a) && (!isComplete(a) || !a.sex)));
-  if (f.place) list = list.filter(a => currentPlace(a) === f.place);
-  if (f.q) list = list.filter(a => a.idv.includes(f.q) || (a.rfid || '').includes(f.q));
-  list.sort((a, b) => a.idv.localeCompare(b.idv));
+  if (pl) list = list.filter(a => currentPlace(a) === pl);
+  const t = normAlias(f.q).toLowerCase();
+  if (t) list = list.filter(a => (a.idv || '').includes(t) || (a.rfid || '').includes(t) || (a.alias || '').toLowerCase().includes(t));
+  list.sort(byAnimal);
   const machos = list.filter(a => a.sex === 'M').length, hembras = list.filter(a => a.sex === 'H').length;
   v.innerHTML = `
     <div class="row"><h2 class="grow">Animales</h2><button class="btn sm" id="aNew">+ Alta</button></div>
     <div class="chips">${['activos', 'inactivos', 'incompletos', 'todos'].map(s => `<button data-st="${s}" class="${f.st === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
     <div class="row" style="margin-bottom:10px">
-      <input id="aQ" class="grow" inputmode="numeric" placeholder="Buscar número…" value="${esc(f.q)}">
-      <select id="aPlace" style="width:45%">${placeOptions(f.place, 'Todos los lugares')}</select>
+      <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número o texto…" value="${esc(f.q)}">
+      <select id="aPlace" style="width:45%">${placeOptions(pl, 'Todos los lugares')}</select>
     </div>
     <div class="card">
       <p class="small muted" style="margin:0 0 6px">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p>
@@ -753,8 +835,8 @@ function renderAnimales() {
       ${list.length > 300 ? '<p class="small muted">Mostrando 300. Usá el buscador.</p>' : ''}
     </div>`;
   $$('[data-st]', v).forEach(b => b.onclick = () => { f.st = b.dataset.st; renderAnimales(); });
-  $('#aPlace').onchange = e => { f.place = e.target.value; renderAnimales(); };
-  $('#aQ').addEventListener('input', e => { f.q = onlyDigits(e.target.value); clearTimeout(renderAnimales._t); renderAnimales._t = setTimeout(() => { renderAnimales(); const i = $('#aQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); });
+  $('#aPlace').onchange = async e => { await setPlace(e.target.value); renderAnimales(); };
+  $('#aQ').addEventListener('input', e => { f.q = e.target.value.slice(0, ALIAS_MAX); clearTimeout(renderAnimales._t); renderAnimales._t = setTimeout(() => { renderAnimales(); const i = $('#aQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); });
   $$('[data-id]', v).forEach(li => li.onclick = () => animalDetail(li.dataset.id, renderAnimales));
   $('#aNew').onclick = () => { if (!DB.places.length) return toast('Primero creá un lugar'); registerAnimal('', () => renderAnimales()); };
 }
@@ -780,10 +862,10 @@ function renderLugares() {
   $('#tFrom').onchange = e => {
     const from = e.target.value, box = $('#tList');
     if (!from) { box.innerHTML = ''; return; }
-    const list = activeAnimals(from).concat(DB.animals.filter(a => isActiveFlag(a) && !isComplete(a) && currentPlace(a) === from)).sort((a, b) => a.idv.localeCompare(b.idv));
+    const list = activeAnimals(from).concat(DB.animals.filter(a => isActiveFlag(a) && !isComplete(a) && currentPlace(a) === from)).sort(byAnimal);
     box.innerHTML = list.length ? `
       <div class="row" style="margin:10px 0"><label style="margin:0" class="grow"><input type="checkbox" id="tAll" checked style="width:auto"> Todos (${list.length})</label></div>
-      <ul class="list" style="max-height:300px;overflow:auto">${list.map(a => `<li><label style="margin:0;color:var(--ink)" class="row"><input type="checkbox" class="tChk" value="${a.id}" checked style="width:auto"> <span class="num">${esc(a.idv)}</span> <span class="small muted grow">${a.sex ? SEX[a.sex] : ''}</span>
+      <ul class="list" style="max-height:300px;overflow:auto">${list.map(a => `<li><label style="margin:0;color:var(--ink)" class="row"><input type="checkbox" class="tChk" value="${a.id}" checked style="width:auto"> <span class="num">${esc(nom(a))}</span> <span class="small muted grow">${a.sex ? SEX[a.sex] : ''}</span>
         <input class="tKg" data-id="${a.id}" inputmode="decimal" placeholder="kg" style="width:90px;padding:6px 8px;font-size:16px"></label></li>`).join('')}</ul>
       <button class="btn block" id="tGo">Trasladar seleccionados</button>` : '<p class="muted">No hay animales activos en este lugar.</p>';
     const all = $('#tAll'); if (!all) return;
@@ -794,7 +876,7 @@ function renderLugares() {
       for (const inp of $$('.tKg')) {
         if (!ids.includes(inp.dataset.id)) continue;
         const kg = parseKg(inp.value);
-        if (Number.isNaN(kg)) return toast(`Peso inválido en ${animal(inp.dataset.id).idv}`);
+        if (Number.isNaN(kg)) return toast(`Peso inválido en ${nom(animal(inp.dataset.id))}`);
         if (kg != null) kgs[inp.dataset.id] = kg;
       }
       moveAnimals(ids, renderLugares, kgs);
@@ -820,26 +902,30 @@ function placeForm(p) {
 }
 
 // ================= REPORTES =================
-function sessionStats(s) {
-  const activos = DB.animals.filter(a => activeAt(a, s.date) && (!s.placeId || placeAt(a, s.date) === s.placeId));
-  const ids = sessionAnimalIds(s.id);
+// pl: lugar elegido en Reportes. Una sesión de "todos los lugares" se mira solo para ese lugar.
+const statsPlace = (s, pl) => s.placeId || pl || null;
+function sessionStats(s, pl) {
+  const sp = statsPlace(s, pl);
+  const activos = DB.animals.filter(a => activeAt(a, s.date) && (!sp || placeAt(a, s.date) === sp));
+  const ids = sessionAnimalIds(s.id).filter(id => s.placeId || !sp || placeAt(animal(id) || { places: [] }, s.date) === sp);
+  const recs = sessionRecords(s.id).filter(r => ids.includes(r.animalId));
   // peso promedio: el último peso cargado de cada animal en la sesión
   const kgBy = {};
-  sessionRecords(s.id).sort((x, y) => x.ts.localeCompare(y.ts)).forEach(r => { if (r.kg != null) kgBy[r.animalId] = r.kg; });
+  recs.slice().sort((x, y) => x.ts.localeCompare(y.ts)).forEach(r => { if (r.kg != null) kgBy[r.animalId] = r.kg; });
   const kgs = Object.values(kgBy);
   const kgAvg = kgs.length ? Math.round(kgs.reduce((t, k) => t + k, 0) / kgs.length * 10) / 10 : null;
-  return { activos, ids, faltan: activos.filter(a => !ids.includes(a.id)), kgAvg, kgN: kgs.length };
+  return { activos, ids, recs, place: sp, faltan: activos.filter(a => !ids.includes(a.id)), kgAvg, kgN: kgs.length };
 }
 function renderReportes() {
-  const v = $('#view');
-  const ses = DB.sessions.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
-  const act = activeAnimals();
-  const bajas = DB.animals.filter(a => !isActiveFlag(a));
+  const v = $('#view'), pl = curPlace();
+  const ses = DB.sessions.filter(s => !pl || !s.placeId || s.placeId === pl).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
+  const act = activeAnimals(pl);
+  const bajas = DB.animals.filter(a => !isActiveFlag(a) && inPlace(a, pl));
   const byReason = r => bajas.filter(a => lastPeriod(a).reason === r).length;
   v.innerHTML = `
-    <h2>Reportes</h2>
+    <div class="row"><h2 class="grow">Reportes</h2><select id="rPlace" style="width:50%">${placeOptions(pl, 'Todos los lugares')}</select></div>
     <div class="card">
-      <h3 style="margin-top:0">Resumen actual</h3>
+      <h3 style="margin-top:0">Resumen actual${pl ? ' – ' + esc(placeName(pl)) : ''}</h3>
       <div class="kpis">
         <div class="kpi"><b>${act.length}</b><small>Activos</small></div>
         <div class="kpi"><b>${act.filter(a => a.sex === 'H').length}</b><small>Hembras</small></div>
@@ -849,7 +935,7 @@ function renderReportes() {
         <div class="kpi"><b>${byReason('otro')}</b><small>Otras bajas</small></div>
       </div>
       <table class="rep" style="margin-top:10px"><tr><th>Lugar</th><th>Activos</th><th>♀</th><th>♂</th></tr>
-        ${DB.places.map(p => { const l = activeAnimals(p.id); return `<tr><td>${esc(p.name)}</td><td>${l.length}</td><td>${l.filter(a => a.sex === 'H').length}</td><td>${l.filter(a => a.sex === 'M').length}</td></tr>`; }).join('')}
+        ${DB.places.filter(p => !pl || p.id === pl).map(p => { const l = activeAnimals(p.id); return `<tr><td>${esc(p.name)}</td><td>${l.length}</td><td>${l.filter(a => a.sex === 'H').length}</td><td>${l.filter(a => a.sex === 'M').length}</td></tr>`; }).join('')}
       </table>
       <div class="row wrap" style="margin-top:10px">
         <button class="btn ghost sm" id="rAnimals">⬇ Planilla de animales</button>
@@ -858,22 +944,25 @@ function renderReportes() {
     </div>
     <div class="card">
       <h3 style="margin-top:0">Por sesión</h3>
-      <ul class="list">${ses.map(s => { const st = sessionStats(s); return `
+      ${pl ? `<p class="small muted" style="margin-top:0">Las sesiones de "Todos los lugares" muestran solo los animales que estaban en ${esc(placeName(pl))}.</p>` : ''}
+      <ul class="list">${ses.map(s => { const st = sessionStats(s, pl); return `
         <li class="click" data-s="${s.id}"><div class="row"><div class="grow"><b>${fmt(s.date)}</b> · ${esc(s.obs)} ${s.open ? '<span class="tag warn">ABIERTA</span>' : ''}
-        <div class="small muted">${s.placeId ? esc(placeName(s.placeId)) : 'Todos los lugares'}</div></div>
+        <div class="small muted">${s.placeId ? esc(placeName(s.placeId)) : 'Todos los lugares' + (pl ? ' (solo ' + esc(placeName(pl)) + ')' : '')}</div></div>
         <div class="center"><b>${st.ids.length}</b>/<span class="muted">${st.activos.length}</span><div class="small muted">relev./activos</div></div></div></li>`; }).join('') || '<li class="muted">Todavía no hay sesiones</li>'}</ul>
     </div>`;
-  $$('[data-s]', v).forEach(li => li.onclick = () => sessionReport(session(li.dataset.s)));
-  $('#rAnimals').onclick = exportAnimalsCSV;
-  $('#rAll').onclick = exportAllCSV;
+  $$('[data-s]', v).forEach(li => li.onclick = () => sessionReport(session(li.dataset.s), pl));
+  $('#rPlace').onchange = async e => { await setPlace(e.target.value); renderReportes(); };
+  $('#rAnimals').onclick = () => exportAnimalsCSV(pl);
+  $('#rAll').onclick = () => exportAllCSV(pl);
 }
 
-function sessionReport(s) {
-  const st = sessionStats(s);
-  const recs = sessionRecords(s.id).sort((a, b) => animal(a.animalId)?.idv.localeCompare(animal(b.animalId)?.idv) || a.ts.localeCompare(b.ts));
+const placeLabel = (s, st) => s.placeId ? placeName(s.placeId) : st.place ? `Todos los lugares (solo ${placeName(st.place)})` : 'Todos los lugares';
+function sessionReport(s, pl) {
+  const st = sessionStats(s, pl);
+  const recs = st.recs.slice().sort((a, b) => byAnimal(animal(a.animalId), animal(b.animalId)) || a.ts.localeCompare(b.ts));
   openModal(`
     <div class="row"><h2 class="grow" style="margin:0">${esc(s.obs)}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
-    <p class="muted small">${fmt(s.date)} · ${s.placeId ? esc(placeName(s.placeId)) : 'Todos los lugares'}</p>
+    <p class="muted small">${fmt(s.date)} · ${esc(placeLabel(s, st))}</p>
     <div class="kpis">
       <div class="kpi"><b>${st.activos.length}</b><small>Activos a la fecha</small></div>
       <div class="kpi"><b>${st.ids.length}</b><small>Analizados</small></div>
@@ -882,14 +971,14 @@ function sessionReport(s) {
     </div>
     <h3>Animales analizados</h3>
     <table class="rep"><tr><th>N°</th><th>Sexo</th><th>Kg</th><th>Observación</th></tr>
-      ${recs.map(r => { const a = animal(r.animalId); return `<tr><td class="click" data-a="${a?.id}"><b>${esc(a?.idv)}</b><div class="rfid">${esc(a?.rfid)}</div></td><td>${a?.sex || ''}</td><td style="white-space:nowrap">${r.kg != null ? String(r.kg).replace('.', ',') : ''}</td><td>${esc(r.text) || '<span class="muted">—</span>'}</td></tr>`; }).join('') || '<tr><td colspan="4" class="muted">Sin registros</td></tr>'}
+      ${recs.map(r => { const a = animal(r.animalId); return `<tr><td class="click" data-a="${a?.id}"><b>${esc(nom(a))}</b><div class="rfid">${esc(a?.rfid !== nom(a) ? a?.rfid : '')}</div></td><td>${a?.sex || ''}</td><td style="white-space:nowrap">${r.kg != null ? String(r.kg).replace('.', ',') : ''}</td><td>${esc(r.text) || '<span class="muted">—</span>'}</td></tr>`; }).join('') || '<tr><td colspan="4" class="muted">Sin registros</td></tr>'}
     </table>
-    ${st.faltan.length ? `<h3>Sin relevar (${st.faltan.length})</h3><p class="small">${st.faltan.map(a => esc(a.idv)).sort().join(', ')}</p>` : ''}
+    ${st.faltan.length ? `<h3>Sin relevar (${st.faltan.length})</h3><p class="small">${st.faltan.slice().sort(byAnimal).map(a => esc(nom(a))).join(', ')}</p>` : ''}
     <button class="btn block" id="srCsv">⬇ Exportar CSV</button>
     <button class="btn ghost block" id="srHist">⬇ Historia de estos animales</button>`, m => {
-    $('#srCsv', m).onclick = () => exportSessionCSV(s);
+    $('#srCsv', m).onclick = () => exportSessionCSV(s, pl);
     $('#srHist', m).onclick = () => exportHistoryCSV(st.ids.map(animal), `historia-${s.date}-${slug(s.obs)}`);
-    $$('[data-a]', m).forEach(td => td.onclick = () => animalDetail(td.dataset.a, () => sessionReport(s)));
+    $$('[data-a]', m).forEach(td => td.onclick = () => animalDetail(td.dataset.a, () => sessionReport(s, pl)));
   });
 }
 
@@ -905,31 +994,34 @@ function downloadCSV(name, rows) {
 const raw = (v) => ({ raw: v });
 const csvKg = (n) => n == null ? '' : String(n).replace('.', ','); // coma decimal para Excel en español
 
-function exportSessionCSV(s) {
-  const st = sessionStats(s);
-  const rows = [['Sesión', s.obs], ['Fecha', fmt(s.date)], ['Lugar', s.placeId ? placeName(s.placeId) : 'Todos'], ['Activos', st.activos.length], ['Analizados', st.ids.length], ['Sin relevar', st.faltan.length], ['Peso promedio (kg)', csvKg(st.kgAvg)], [],
-    ['N°', 'Número largo', 'Sexo', 'Lugar', 'Peso (kg)', 'Observación', 'Hora']];
-  sessionRecords(s.id).forEach(r => { const a = animal(r.animalId); rows.push([raw(csvNum(a.idv)), raw(csvNum(a.rfid)), SEX[a.sex] || '', placeName(placeAt(a, s.date)), csvKg(r.kg), r.text, fmtDT(r.ts)]); });
-  if (st.faltan.length) { rows.push([], ['SIN RELEVAR']); st.faltan.forEach(a => rows.push([raw(csvNum(a.idv)), raw(csvNum(a.rfid)), SEX[a.sex] || ''])); }
-  downloadCSV(`sesion-${s.date}-${slug(s.obs)}`, rows);
+// columnas de identificación de un animal en los CSV
+const csvIds = (a) => [raw(csvNum(a.idv)), raw(csvNum(a.rfid)), a.alias || ''];
+const CSV_IDS = ['N°', 'Número largo', 'Identificación texto'];
+function exportSessionCSV(s, pl) {
+  const st = sessionStats(s, pl);
+  const rows = [['Sesión', s.obs], ['Fecha', fmt(s.date)], ['Lugar', placeLabel(s, st)], ['Activos', st.activos.length], ['Analizados', st.ids.length], ['Sin relevar', st.faltan.length], ['Peso promedio (kg)', csvKg(st.kgAvg)], [],
+    [...CSV_IDS, 'Sexo', 'Lugar', 'Peso (kg)', 'Observación', 'Hora']];
+  st.recs.forEach(r => { const a = animal(r.animalId); rows.push([...csvIds(a), SEX[a.sex] || '', placeName(placeAt(a, s.date)), csvKg(r.kg), r.text, fmtDT(r.ts)]); });
+  if (st.faltan.length) { rows.push([], ['SIN RELEVAR']); st.faltan.forEach(a => rows.push([...csvIds(a), SEX[a.sex] || ''])); }
+  downloadCSV(`sesion-${s.date}-${slug(s.obs)}${st.place && !s.placeId ? '-' + slug(placeName(st.place)) : ''}`, rows);
 }
-function exportAnimalsCSV() {
-  const rows = [['N°', 'Número largo', 'Sexo', 'Estado', 'Lugar actual', 'Fecha activación', 'Fecha baja', 'Motivo baja', 'Aclaración', 'Registros', 'Último peso (kg)', 'Fecha último peso']];
-  DB.animals.slice().sort((a, b) => a.idv.localeCompare(b.idv)).forEach(a => {
+function exportAnimalsCSV(pl) {
+  const rows = [[...CSV_IDS, 'Sexo', 'Estado', 'Lugar actual', 'Fecha activación', 'Fecha baja', 'Motivo baja', 'Aclaración', 'Registros', 'Último peso (kg)', 'Fecha último peso']];
+  DB.animals.filter(a => inPlace(a, pl)).sort(byAnimal).forEach(a => {
     const p = lastPeriod(a);
-    rows.push([raw(csvNum(a.idv)), raw(csvNum(a.rfid)), SEX[a.sex] || '', isActive(a) ? 'Activo' : isActiveFlag(a) ? 'Incompleto' : 'Baja', placeName(currentPlace(a)), fmt(p?.from), p?.to ? fmt(p.to) : '', p?.to ? REASONS[p.reason] : '', p?.detail || '', DB.records.filter(r => r.animalId === a.id).length, csvKg(lastWeight(a)?.kg), lastWeight(a) ? fmt(lastWeight(a).date) : '']);
+    rows.push([...csvIds(a), SEX[a.sex] || '', isActive(a) ? 'Activo' : isActiveFlag(a) ? 'Incompleto' : 'Baja', placeName(currentPlace(a)), fmt(p?.from), p?.to ? fmt(p.to) : '', p?.to ? REASONS[p.reason] : '', p?.detail || '', DB.records.filter(r => r.animalId === a.id).length, csvKg(lastWeight(a)?.kg), lastWeight(a) ? fmt(lastWeight(a).date) : '']);
   });
-  downloadCSV(`animales-${today()}`, rows);
+  downloadCSV(`animales-${pl ? slug(placeName(pl)) + '-' : ''}${today()}`, rows);
 }
 function exportHistoryCSV(animals, name) {
-  const rows = [['N°', 'Número largo', 'Sexo', 'Fecha', 'Evento / Sesión', 'Peso (kg)', 'Observación']];
-  animals.filter(Boolean).sort((a, b) => a.idv.localeCompare(b.idv)).forEach(a => {
-    animalTimeline(a).reverse().forEach(e => rows.push([raw(csvNum(a.idv)), raw(csvNum(a.rfid)), SEX[a.sex] || '', fmt(e.date), e.title, csvKg(e.kg), e.text]));
+  const rows = [[...CSV_IDS, 'Sexo', 'Fecha', 'Evento / Sesión', 'Peso (kg)', 'Observación']];
+  animals.filter(Boolean).sort(byAnimal).forEach(a => {
+    animalTimeline(a).reverse().forEach(e => rows.push([...csvIds(a), SEX[a.sex] || '', fmt(e.date), e.title, csvKg(e.kg), e.text]));
   });
   downloadCSV(name, rows);
 }
-function exportAnimalCSV(a) { exportHistoryCSV([a], `historia-${a.idv}`); }
-function exportAllCSV() { exportHistoryCSV(DB.animals, `historia-completa-${today()}`); }
+function exportAnimalCSV(a) { exportHistoryCSV([a], `historia-${slug(nom(a))}`); }
+function exportAllCSV(pl) { exportHistoryCSV(DB.animals.filter(a => inPlace(a, pl)), `historia-completa-${pl ? slug(placeName(pl)) + '-' : ''}${today()}`); }
 
 // ================= CUADROS =================
 // Cuadros predefinidos: se crean solos la primera vez para los lugares "Chacra" y "Media chacra".
@@ -967,7 +1059,7 @@ function renderCuadros() {
     v.innerHTML = `<h2>Cuadros</h2><div class="card"><p>Todavía no hay cuadros. Se crean solos cuando existen los lugares <b>Chacra</b> y <b>Media chacra</b>.</p></div>`;
     return;
   }
-  if (!places.some(p => p.id === cuadrosPlace)) cuadrosPlace = places[0].id;
+  if (!places.some(p => p.id === cuadrosPlace)) cuadrosPlace = (places.find(p => p.id === curPlace()) || places[0]).id;
   const list = DB.cuadros.filter(c => c.placeId === cuadrosPlace).sort(byName);
   const hoy = today();
   const ocupados = list.filter(c => cuadroState(c).open).length;

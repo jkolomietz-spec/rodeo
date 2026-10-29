@@ -11,13 +11,15 @@
   --red-soft: #f6e1dc;
   --amber: #a8741a;
   --amber-soft: #f7ecd5;
+  --yellow: #e2c100;
+  --yellow-soft: #fff4a8;
   --radius: 12px;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161a17; --card: #20261f; --ink: #e8ede6; --muted: #9aa69b; --line: #343d34;
     --green: #5d9c6b; --green-2: #6fb07d; --green-soft: #26372a;
-    --red: #e07a66; --red-soft: #3e2622; --amber: #e0b05a; --amber-soft: #3a3020;
+    --red: #e07a66; --red-soft: #3e2622; --amber: #e0b05a; --amber-soft: #3a3020; --yellow: #c9a800; --yellow-soft: #47400c;
   }
 }
 * { box-sizing: border-box; }
@@ -38,6 +40,13 @@ header#top {
 .stat { flex: 0 0 auto; min-width: 70px; text-align: center; background: rgba(255,255,255,.12); border-radius: 10px; padding: 4px 8px; }
 .stat span { display: block; font-size: 24px; font-weight: 700; line-height: 1.1; }
 .stat small { font-size: 11px; opacity: .85; }
+/* animal que figura en otro lugar que el de la sesión */
+.otro-lugar { background: var(--yellow-soft) !important; border-color: var(--yellow) !important; }
+.list li.otro-lugar { border-radius: 8px; padding-left: 8px; padding-right: 8px; border: 1px solid var(--yellow); margin: 2px 0; }
+.otro-aviso { margin: 10px 0; font-size: 15px; }
+.workplace {display: flex; align-items: center; gap: 8px; margin: 6px 0 0; color: #fff; font-size: 14px; }
+.workplace select { flex: 1; width: auto; margin: 0; padding: 4px 8px; font-size: 15px; background: rgba(255,255,255,.15); color: #fff; border: 1px solid rgba(255,255,255,.35); border-radius: 8px; }
+.workplace select option { color: #1f2a22; background: #fff; }
 .stat-session { flex: 1 1 auto; text-align: left; min-width: 0; }
 .stat-session span { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-top: 3px; }
 
