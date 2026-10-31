@@ -1238,8 +1238,24 @@ function renderCuadros() {
     <div class="row"><h2 class="grow">Cuadros</h2><button class="btn sm" id="cNew">+ Registrar</button></div>
     <div class="chips">${places.map(p => `<button data-pl="${p.id}" class="${p.id === cuadrosPlace ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>
     <p class="small muted" style="margin-top:0">${list.length} cuadros · ${ocupados} ocupados. Se muestra la <b>última salida</b> de animales de cada cuadro; tocá uno para ver su historia o registrar ingreso/salida.</p>
-    <div class="chips"><button data-vw="grid" class="${cuadrosView === 'grid' ? 'on' : ''}">▦ Cuadros</button><button data-vw="list" class="${cuadrosView === 'list' ? 'on' : ''}">☰ Listado</button></div>
-    ${cuadrosView === 'list' ? `<table class="rep"><tr><th>Cuadro</th><th>Fecha de salida</th><th>Días desde la salida</th></tr>${
+    <div class="chips"><button data-vw="grid" class="${cuadrosView === 'grid' ? 'on' : ''}">▦ Cuadros</button><button data-vw="list" class="${cuadrosView === 'list' ? 'on' : ''}">☰ Listado</button><button data-vw="hist" class="${cuadrosView === 'hist' ? 'on' : ''}">📊 Histograma</button></div>
+    ${cuadrosView === 'hist' ? (() => {
+      const rows = list.map(c => ({ c, st: cuadroState(c) }))
+        .map(x => ({ ...x, days: x.st.open || !x.st.lastOut ? null : daysBetween(x.st.lastOut.salida, hoy) }))
+        .sort((a, b) => (b.days ?? -1) - (a.days ?? -1) || byName(a.c, b.c));
+      const max = Math.max(0, ...rows.map(x => x.days || 0));
+      const w = max > 120 ? 30 : 15;
+      const bins = [];
+      for (let lo = 0; lo <= max; lo += w) bins.push({ label: `${lo}–${lo + w - 1}`, items: rows.filter(x => x.days != null && x.days >= lo && x.days < lo + w) });
+      const sinSalida = rows.filter(x => !x.st.open && x.days == null), ocup = rows.filter(x => x.st.open);
+      if (ocup.length) bins.push({ label: 'Ocupados', cls: 'occ', items: ocup });
+      if (sinSalida.length) bins.push({ label: 'Sin salida', cls: 'none', items: sinSalida });
+      return `<p class="small muted" style="margin:0 0 6px">Cuántos cuadros hay en cada rango de días de descanso (desde la última salida).</p>
+      <div class="vhist">${bins.map(bn => `<div class="vcol"><span class="vn">${bn.items.length || ''}</span>
+        <div class="vstack">${bn.items.map(x => `<button class="vcell ${bn.cls || (rest[x.c.id] ? 'rest' + rest[x.c.id] : '')}" data-c="${x.c.id}">${esc(x.c.name)}</button>`).join('')}</div>
+        <span class="vl">${bn.label}</span></div>`).join('')}</div>
+      <p class="small muted" style="margin:4px 0 8px;text-align:center">Rango de días de descanso</p>`;
+    })() : cuadrosView === 'list' ? `<table class="rep"><tr><th>Cuadro</th><th>Fecha de salida</th><th>Días desde la salida</th></tr>${
       list.map(c => ({ c, st: cuadroState(c) }))
         .map(x => ({ ...x, days: x.st.open || !x.st.lastOut ? null : daysBetween(x.st.lastOut.salida, hoy) }))
         .sort((a, b) => (b.days ?? -1) - (a.days ?? -1) || byName(a.c, b.c))

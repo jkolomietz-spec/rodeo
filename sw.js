@@ -1,6 +1,6 @@
 // Service worker: guarda la app en el teléfono para que abra sin internet.
 // Cambiar VERSION cada vez que se publiquen cambios.
-const VERSION = 'rodeo-v9';
+const VERSION = 'rodeo-v10';
 const FILES = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
