@@ -45,6 +45,7 @@ const emptyDB = () => ({
   animals: [],    // {id, idv, rfid, sex, cat, motherId, periods:[{from,to,reason,detail}], places:[{placeId,date}], createdAt}
   sessions: [],   // {id, date, obs, placeId, open, createdAt, closedAt}
   records: [],    // {id, sessionId, animalId, text, ts}
+  novedades: [],  // {id, date, text, ts}
   terneros: [],   // packs de terneros contados sin identificar: {id, placeId, date, m, h, s, obs, hist:[{date,text}]}
   cuadros: [],    // {id, placeId, name}
   pastoreos: [],  // {id, cuadroId, ingreso, salida, cantidad, obs}
@@ -168,7 +169,7 @@ function animalTimeline(a) {
   a.places.forEach((e, i) => ev.push({ date: e.date, ord: 1, cls: 'ev-place', title: i === 0 ? 'INGRESA A ' + placeName(e.placeId).toUpperCase() : 'TRASLADO A ' + placeName(e.placeId).toUpperCase(), text: e.obs || '', kg: e.kg, key: 'place:' + i, i }));
   DB.records.filter(r => r.animalId === a.id).forEach(r => {
     const s = session(r.sessionId);
-    ev.push({ date: recDate(r), ord: 2, cls: r.out ? 'ev-out' : '', title: (s?.obs || 'Sesión') + (r.out ? ' – FUERA DE SESIÓN' : ''), text: r.text, kg: r.kg, rec: r, ts: r.ts, key: 'rec:' + r.id });
+    ev.push({ date: recDate(r), ord: 2, cls: r.out ? 'ev-out' : '', title: (s ? s.obs + (r.note ? ' – OBSERVACIÓN' : '') : 'OBSERVACIÓN') + (r.out ? ' – FUERA DE SESIÓN' : ''), text: r.text, kg: r.kg, rec: r, ts: r.ts, key: 'rec:' + r.id });
   });
   ev.sort((x, y) => (y.date.localeCompare(x.date)) || (y.ord - x.ord) || ((y.ts || '').localeCompare(x.ts || '')) || ((y.i ?? 0) - (x.i ?? 0)));
   return ev;
@@ -262,16 +263,97 @@ $('#workPlace').onchange = async e => {
 
 // ---------- navegación ----------
 let tab = 'sesion';
-$$('#tabs button').forEach(b => b.onclick = () => go(b.dataset.tab));
+$$('#tabs button').forEach(b => b.onclick = () => b.dataset.tab === 'mas' ? openMas() : go(b.dataset.tab));
 function go(t) {
   tab = t;
-  $$('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  $$('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t || (b.dataset.tab === 'mas' && (t === 'lugares' || t === 'backup'))));
   render();
   window.scrollTo(0, 0);
 }
 function render() {
   renderHeader();
-  ({ sesion: renderSesion, animales: renderAnimales, lugares: renderLugares, reportes: renderReportes, cuadros: renderCuadros, backup: renderBackup })[tab]();
+  ({ sesion: renderSesion, animales: renderAnimales, lugares: renderLugares, reportes: renderReportes, cuadros: renderCuadros, novedades: renderNovedades, backup: renderBackup })[tab]();
+}
+function openMas() {
+  openModal(`<h2>Más</h2>
+    <button class="btn ghost block" data-to="lugares">📍 Lugares</button>
+    <button class="btn ghost block" data-to="backup">☁️ Backup</button>
+    <button class="btn ghost block" onclick="closeModal()">Cerrar</button>`, m =>
+    $$('[data-to]', m).forEach(b => b.onclick = () => { closeModal(); go(b.dataset.to); }));
+}
+
+// ================= NOVEDADES =================
+function renderNovedades() {
+  const v = $('#view');
+  const list = DB.novedades.slice().sort((a, b) => b.date.localeCompare(a.date) || b.ts.localeCompare(a.ts));
+  v.innerHTML = `
+    <div class="row"><h2 class="grow">Novedades</h2><button class="btn sm" id="nNew">+ Novedad</button></div>
+    <div class="card"><ul class="list">${list.map(n => `
+      <li><div class="row"><div class="grow"><b>${fmt(n.date)}</b><div class="txt" style="white-space:pre-wrap">${esc(n.text)}</div></div>
+      <button class="btn ghost sm" data-nid="${n.id}" aria-label="Editar">✎</button></div></li>`).join('') || '<li class="muted">Todavía no hay novedades.</li>'}</ul></div>`;
+  $('#nNew').onclick = () => editNovedad(null);
+  $$('[data-nid]', v).forEach(b => b.onclick = () => editNovedad(DB.novedades.find(n => n.id === b.dataset.nid)));
+}
+function editNovedad(n) {
+  openModal(`<h2>${n ? 'Editar novedad' : 'Nueva novedad'}</h2>
+    <label>Fecha</label><input id="nDate" type="date" value="${n ? n.date : today()}">
+    <label>Observaciones</label><textarea id="nTxt" placeholder="Qué pasó…">${n ? esc(n.text) : ''}</textarea>
+    <button class="btn block" id="nSave">Guardar</button>
+    ${n ? '<button class="btn danger ghost block" id="nDel">🗑 Eliminar novedad</button>' : ''}
+    <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
+    $('#nSave', m).onclick = async () => {
+      const text = $('#nTxt', m).value.trim(), date = $('#nDate', m).value || today();
+      if (!text) return toast('Escribí la observación');
+      if (n) Object.assign(n, { date, text });
+      else DB.novedades.push({ id: uid(), date, text, ts: new Date().toISOString() });
+      await save(); closeModal(); renderNovedades();
+    };
+    const del = $('#nDel', m);
+    if (del) del.onclick = async () => {
+      if (!(await askConfirm(`¿Eliminar la novedad del ${fmt(n.date)}?\n\n${n.text}`, { ok: 'Sí, eliminar', danger: true }))) return;
+      DB.novedades = DB.novedades.filter(x => x !== n);
+      await save(); closeModal(); renderNovedades();
+    };
+  });
+}
+
+// Observación para varios animales a la vez. Con `sid` queda dentro de esa sesión (animales ya trabajados en ella);
+// sin `sid` es un comentario suelto con la fecha elegida.
+function noteModal(list, { sid = null, title, after }) {
+  const s = sid && session(sid);
+  list = list.slice().sort(byAnimal);
+  openModal(`<div class="row"><h2 class="grow" style="margin:0">${esc(title)}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    ${s ? `<p class="small muted">Sesión ${esc(s.obs)} · ${fmt(s.date)}. Queda en la historia de cada animal tildado.</p>` : ''}
+    <label class="row sel-all"><input type="checkbox" id="nAll" checked> <span class="grow">Todos</span> <b id="nCount"></b></label>
+    <ul class="list">${list.map(a => `<li class="row sel-row"><label class="row grow" style="margin:0;color:var(--ink)"><input type="checkbox" class="nChk" value="${a.id}" checked>
+      <span class="num">${esc(nom(a))}</span><span class="tag grey">${a.sex ? SEX[a.sex] : '¿sexo?'}</span></label></li>`).join('')}</ul>
+    <div class="sel-bar">
+      ${s ? '' : `<label style="margin-top:0">Fecha</label><input id="nDate" type="date" value="${today()}">`}
+      <label>Observación</label>
+      <textarea id="nTxt" placeholder="Escribí la observación…"></textarea>
+      <button class="btn block" id="nSave">Guardar</button>
+    </div>`, m => {
+    const chks = $$('.nChk', m), sel = () => chks.filter(c => c.checked).map(c => c.value);
+    const update = () => {
+      const n = sel().length;
+      $('#nCount', m).textContent = `${n} seleccionado${n === 1 ? '' : 's'}`;
+      $('#nSave', m).disabled = !n;
+      $('#nAll', m).checked = n === chks.length;
+    };
+    chks.forEach(c => c.onchange = update);
+    $('#nAll', m).onchange = e => { chks.forEach(c => c.checked = e.target.checked); update(); };
+    update();
+    $('#nSave', m).onclick = async () => {
+      const ids = sel(), text = $('#nTxt', m).value.trim();
+      if (!ids.length) return;
+      if (!text) return toast('Escribí la observación');
+      const ts = new Date().toISOString(), date = s ? undefined : ($('#nDate', m).value || today());
+      ids.forEach(id => DB.records.push({ id: uid(), sessionId: s ? s.id : null, animalId: id, kg: null, text, ts, note: true, ...(date ? { date } : {}) }));
+      await save(); closeModal();
+      toast(`✓ Observación guardada en ${ids.length} animal${ids.length === 1 ? '' : 'es'}`);
+      after && after();
+    };
+  });
 }
 
 // ---------- selector de lugar ----------
@@ -590,7 +672,7 @@ const delBtn = (label) => `<button class="btn danger ghost block" id="xDel">🗑
 function editRecord(rid, after) {
   const r = DB.records.find(x => x.id === rid); if (!r) return;
   const s = session(r.sessionId), a = animal(r.animalId);
-  eventModal(`<h2>Editar observación</h2><p class="small muted">Animal ${esc(nom(a))} · Sesión ${esc(s?.obs)} (${fmt(s?.date)})</p>
+  eventModal(`<h2>Editar observación</h2><p class="small muted">Animal ${esc(nom(a))}${s ? ` · Sesión ${esc(s.obs)} (${fmt(s.date)})` : ''}</p>
     <label>Fecha</label><input id="rDate" type="date" value="${recDate(r)}">
     <label>Peso (kg)</label>${kgInput('rKg', r.kg)}
     <label>Observación</label><textarea id="rTxt">${esc(r.text)}</textarea>
@@ -978,7 +1060,7 @@ function moveAnimals(ids, after, kgs = {}, dest) {
 }
 
 // ================= ANIMALES =================
-let animFilter = { st: 'activos', q: '' };
+let animFilter = { st: 'activos', q: '', sel: false, picked: new Set() };
 function renderAnimales() {
   const v = $('#view');
   const f = animFilter, pl = curPlace();
@@ -990,7 +1072,7 @@ function renderAnimales() {
   list.sort(byAnimal);
   const machos = list.filter(a => a.sex === 'M').length, hembras = list.filter(a => a.sex === 'H').length;
   v.innerHTML = `
-    <div class="row"><h2 class="grow">Animales</h2><button class="btn sm" id="aNew">+ Alta</button></div>
+    <div class="row"><h2 class="grow">Animales</h2><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Comentar'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
     <div class="chips">${['activos', 'inactivos', 'incompletos', 'todos'].map(s => `<button data-st="${s}" class="${f.st === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
     <div class="row" style="margin-bottom:10px">
       <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número o texto…" value="${esc(f.q)}">
@@ -999,13 +1081,33 @@ function renderAnimales() {
     ${lotsCardHTML(pl)}
     <div class="card">
       <p class="small muted" style="margin:0 0 6px">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p>
-      <ul class="list">${list.slice(0, 300).map(a => `<li class="click" data-id="${a.id}">${animalLine(a)}</li>`).join('') || '<li class="muted">Sin resultados</li>'}</ul>
+      ${f.sel ? `<label class="row sel-all"><input type="checkbox" id="aAll"> <span class="grow">Seleccionar todos los de la lista</span> <b id="aCount"></b></label>` : ''}
+      <ul class="list">${list.slice(0, 300).map(a => f.sel
+        ? `<li class="row sel-row"><label class="row grow" style="margin:0;color:var(--ink)"><input type="checkbox" class="aChk" value="${a.id}" ${f.picked.has(a.id) ? 'checked' : ''}><span class="grow">${animalLine(a)}</span></label></li>`
+        : `<li class="click" data-id="${a.id}">${animalLine(a)}</li>`).join('') || '<li class="muted">Sin resultados</li>'}</ul>
       ${list.length > 300 ? '<p class="small muted">Mostrando 300. Usá el buscador.</p>' : ''}
     </div>`;
   $$('[data-st]', v).forEach(b => b.onclick = () => { f.st = b.dataset.st; renderAnimales(); });
   $('#aPlace').onchange = async e => { await setPlace(e.target.value); renderAnimales(); };
   $('#aQ').addEventListener('input', e => { f.q = e.target.value.slice(0, ALIAS_MAX); clearTimeout(renderAnimales._t); renderAnimales._t = setTimeout(() => { renderAnimales(); const i = $('#aQ'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); });
   $$('[data-id]', v).forEach(li => li.onclick = () => animalDetail(li.dataset.id, renderAnimales));
+  $('#aSel').onclick = () => { f.sel = !f.sel; f.picked = new Set(); renderAnimales(); };
+  if (f.sel) {
+    const chks = $$('.aChk', v);
+    const update = () => {
+      chks.forEach(c => c.checked ? f.picked.add(c.value) : f.picked.delete(c.value));
+      const n = f.picked.size;
+      $('#aCount').textContent = `${n} seleccionado${n === 1 ? '' : 's'}`;
+      $('#aAll').checked = chks.length > 0 && chks.every(c => c.checked);
+      $('#aGo').textContent = `📝 Comentar ${n} seleccionado${n === 1 ? '' : 's'}`;
+      $('#aGo').disabled = !n;
+    };
+    v.insertAdjacentHTML('beforeend', '<div class="sel-bar" style="bottom:calc(62px + env(safe-area-inset-bottom))"><button class="btn block" id="aGo" disabled></button></div>');
+    chks.forEach(c => c.onchange = update);
+    $('#aAll').onchange = e => { chks.forEach(c => c.checked = e.target.checked); update(); };
+    $('#aGo').onclick = () => noteModal([...f.picked].map(animal).filter(Boolean), { title: 'Comentario', after: () => { f.sel = false; f.picked = new Set(); renderAnimales(); } });
+    update();
+  }
   bindLots(v, renderAnimales);
   $('#aNew').onclick = () => { if (!DB.places.length) return toast('Primero creá un lugar'); registerAnimal('', () => renderAnimales()); };
 }
@@ -1150,8 +1252,11 @@ function sessionReport(s, pl) {
       ${st.outRecs.slice().sort((a, b) => byAnimal(animal(a.animalId), animal(b.animalId)) || a.ts.localeCompare(b.ts)).map(r => { const a = animal(r.animalId); return `<tr><td class="click" data-a="${a?.id}"><b>${esc(nom(a))}</b></td><td>${a?.sex || ''}</td><td style="white-space:nowrap">${r.kg != null ? String(r.kg).replace('.', ',') : ''}</td><td>${esc(r.text) || '<span class="muted">—</span>'}</td></tr>`; }).join('')}
     </table>` : ''}
     ${st.faltan.length ? `<h3>Sin relevar (${st.faltan.length})</h3><p class="small">${st.faltan.slice().sort(byAnimal).map(a => esc(nom(a))).join(', ')}</p>` : ''}
+    ${s.open ? '' : '<button class="btn block" id="srNote">📝 Agregar observación</button>'}
     <button class="btn block" id="srCsv">⬇ Exportar CSV</button>
     <button class="btn ghost block" id="srHist">⬇ Historia de estos animales</button>`, m => {
+    const nb = $('#srNote', m);
+    if (nb) nb.onclick = () => noteModal([...st.ids, ...st.outIds].map(animal).filter(Boolean), { sid: s.id, title: 'Observación de ' + s.obs, after: () => sessionReport(s, pl) });
     $('#srCsv', m).onclick = () => exportSessionCSV(s, pl);
     $('#srHist', m).onclick = () => exportHistoryCSV(st.ids.map(animal), `historia-${s.date}-${slug(s.obs)}`);
     $$('[data-a]', m).forEach(td => td.onclick = () => animalDetail(td.dataset.a, () => sessionReport(s, pl)));
