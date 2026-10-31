@@ -52,6 +52,8 @@ header#top {
 .breakdown .brow + .brow { margin-top: 2px; }
 .breakdown span { white-space: nowrap; }
 .breakdown b { font-size: 14px; }
+.breakdown .hl { font-size: 14px; font-weight: 700; }
+.breakdown .hl b { font-size: 16px; }
 .breakdown .toggle { width: 10px; opacity: .8; }
 .stat-session { flex: 1 1 auto; text-align: left; min-width: 0; }
 .stat-session span { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-top: 3px; }

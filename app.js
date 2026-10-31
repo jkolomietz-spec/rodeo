@@ -233,10 +233,10 @@ function renderHeader() {
   const open = !!DB.settings.statOpen;
   const sum = `<span class="toggle">${open ? '▾' : '▸'}</span><span><b>${act.length}</b> animales</span><span>Terneritos <b>${packTotal}</b></span>`;
   $('#statDesglose').innerHTML = open
-    ? `<div class="brow"><span class="toggle">▾</span><span><b>${act.length}</b> animales</span><span>♀ Hembras <b>${cnt(a => a.sex === 'H')}</b></span><span>♂ Machos <b>${cnt(a => a.sex === 'M')}</b></span>${sinCat ? `<span>Sin clasificar <b>${sinCat}</b></span>` : ''}</div>
-       <div class="brow">${cat('Ternera')}${cat('Vaquillona')}${cat('Vaca')}</div>
-       <div class="brow">${cat('Ternero')}${cat('Novillo')}${cat('Toro')}</div>
-       <div class="brow"><span>Terneritos <b>${packTotal}</b></span><span>♀ Hembras <b>${pk('h')}</b></span><span>♂ Machos <b>${pk('m')}</b></span><span>? Sin identificar <b>${pk('s')}</b></span></div>`
+    ? `<div class="brow"><span class="toggle">▾</span><span><b>${act.length}</b> animales</span><span>Terneritos <b>${packTotal}</b></span>${sinCat ? `<span>Sin clasificar <b>${sinCat}</b></span>` : ''}</div>
+       <div class="brow"><span class="hl">♀ Hembras <b>${cnt(a => a.sex === 'H')}</b></span>${cat('Ternera')}${cat('Vaquillona')}${cat('Vaca')}</div>
+       <div class="brow"><span class="hl">♂ Machos <b>${cnt(a => a.sex === 'M')}</b></span>${cat('Ternero')}${cat('Novillo')}${cat('Toro')}</div>
+       <div class="brow"><span class="hl">Terneritos <b>${packTotal}</b></span><span>♀ Hembras <b>${pk('h')}</b></span><span>♂ Machos <b>${pk('m')}</b></span><span>?s/i <b>${pk('s')}</b></span></div>`
     : `<div class="brow">${sum}</div>`;
   $('#statRelevados').textContent = s ? sessionAnimalIds(s.id).length : '–';
   $('#statSesion').innerHTML = s
@@ -1257,10 +1257,10 @@ function renderCuadros() {
       const max = Math.max(0, ...rows.map(x => x.days || 0));
       const w = max > 120 ? 30 : 15;
       const bins = [];
-      for (let lo = 0; lo <= max; lo += w) bins.push({ label: `${lo}–${lo + w - 1}`, items: rows.filter(x => x.days != null && x.days >= lo && x.days < lo + w) });
+      for (let lo = Math.floor(max / w) * w; lo >= 0; lo -= w) bins.push({ label: `${lo}–${lo + w - 1}`, items: rows.filter(x => x.days != null && x.days >= lo && x.days < lo + w) });
       const sinSalida = rows.filter(x => !x.st.open && x.days == null), ocup = rows.filter(x => x.st.open);
-      if (ocup.length) bins.push({ label: 'Ocupados', cls: 'occ', items: ocup });
       if (sinSalida.length) bins.push({ label: 'Sin salida', cls: 'none', items: sinSalida });
+      if (ocup.length) bins.push({ label: 'Ocupados', cls: 'occ', items: ocup });
       return `<p class="small muted" style="margin:0 0 6px">Cuántos cuadros hay en cada rango de días de descanso (desde la última salida).</p>
       <div class="vhist">${bins.map(bn => `<div class="vcol"><span class="vn">${bn.items.length || ''}</span>
         <div class="vstack">${bn.items.map(x => `<button class="vcell ${bn.cls || (rest[x.c.id] ? 'rest' + rest[x.c.id] : '')}" data-c="${x.c.id}">${esc(x.c.name)}</button>`).join('')}</div>
