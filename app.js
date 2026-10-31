@@ -225,9 +225,19 @@ function renderHeader() {
   wp.innerHTML = placeOptions(pl, 'Todos los lugares');
   wp.title = s ? 'Lugar de la sesión abierta' : 'Lugar para sesión, animales y reportes';
   const cnt = (f) => act.filter(f).length;
-  const catsHTML = ['Toro', 'Novillo', 'Ternero', 'Vaca', 'Vaquillona', 'Ternera'].map(c => `<span>${c} <b>${cnt(a => a.cat === c)}</b></span>`).join('');
+  const cat = (c) => `<span>${c} <b>${cnt(a => a.cat === c)}</b></span>`;
   const sinCat = cnt(a => !a.cat);
-  $('#statDesglose').innerHTML = `<span><b>${act.length}</b> animales</span><span>♀ Hembras <b>${cnt(a => a.sex === 'H')}</b></span><span>♂ Machos <b>${cnt(a => a.sex === 'M')}</b></span><i class="gap"></i>${catsHTML}${sinCat ? `<span>Sin clasificar <b>${sinCat}</b></span>` : ''}`;
+  const packs = DB.terneros.filter(l => !pl || l.placeId === pl);
+  const pk = (k) => packs.reduce((n, l) => n + (l[k] || 0), 0);
+  const packTotal = pk('h') + pk('m') + pk('s');
+  const open = !!DB.settings.statOpen;
+  const sum = `<span class="toggle">${open ? '▾' : '▸'}</span><span><b>${act.length}</b> animales</span><span>Terneritos <b>${packTotal}</b></span>`;
+  $('#statDesglose').innerHTML = open
+    ? `<div class="brow"><span class="toggle">▾</span><span><b>${act.length}</b> animales</span><span>♀ Hembras <b>${cnt(a => a.sex === 'H')}</b></span><span>♂ Machos <b>${cnt(a => a.sex === 'M')}</b></span>${sinCat ? `<span>Sin clasificar <b>${sinCat}</b></span>` : ''}</div>
+       <div class="brow">${cat('Ternera')}${cat('Vaquillona')}${cat('Vaca')}</div>
+       <div class="brow">${cat('Ternero')}${cat('Novillo')}${cat('Toro')}</div>
+       <div class="brow"><span>Terneritos <b>${packTotal}</b></span><span>♀ Hembras <b>${pk('h')}</b></span><span>♂ Machos <b>${pk('m')}</b></span><span>? Sin identificar <b>${pk('s')}</b></span></div>`
+    : `<div class="brow">${sum}</div>`;
   $('#statRelevados').textContent = s ? sessionAnimalIds(s.id).length : '–';
   $('#statSesion').innerHTML = s
     ? `<span>${esc(s.obs)}</span><small>${fmt(s.date)}${s.placeId ? ' · ' + esc(placeName(s.placeId)) : ''}</small>`
@@ -242,6 +252,7 @@ function openModal(html, bind) {
 }
 function closeModal() { $('#modal').classList.add('hidden'); $('#modalBox').innerHTML = ''; }
 $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+$('#statDesglose').onclick = async () => { DB.settings.statOpen = !DB.settings.statOpen; await save(); renderHeader(); };
 $('#workPlace').onchange = async e => {
   await setPlace(e.target.value);
   const s = openSession();
@@ -681,14 +692,14 @@ function editPeriodTo(a, i, after) {
 
 function deleteAnimal(a, after) {
   const n = DB.records.filter(r => r.animalId === a.id).length;
-  askConfirm(`¿Seguro que querés ELIMINAR el animal ${nom(a)}?\nSe borra toda su historia (${n} registros). No se puede deshacer.\n\n${a.fromLot && lot(a.fromLot.id) ? '\nSe devuelve 1 ternero al pack del que se descontó.\n' : ''}\nSi fue vendido o murió, usá "Dar de baja".`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
+  askConfirm(`¿Seguro que querés ELIMINAR el animal ${nom(a)}?\nSe borra toda su historia (${n} registros). No se puede deshacer.\n\n${a.fromLot && lot(a.fromLot.id) ? '\nSe devuelve 1 ternero a los terneritos de los que se descontó.\n' : ''}\nSi fue vendido o murió, usá "Dar de baja".`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
     if (!ok) return;
     const l = a.fromLot && lot(a.fromLot.id);
     if (l) { l[a.fromLot.cat] = (l[a.fromLot.cat] || 0) + 1; (l.hist ||= []).push({ date: today(), text: `Se eliminó el animal ${nom(a)}: se suma 1 de vuelta (${LOT_CATS[a.fromLot.cat].toLowerCase()})` }); }
     DB.animals = DB.animals.filter(x => x.id !== a.id);
     DB.records = DB.records.filter(r => r.animalId !== a.id);
     if (lookup.animalId === a.id) lookup = { q: '', animalId: null };
-    await save(); closeModal(); toast(`Animal ${nom(a)} eliminado` + (l ? ' · devuelto al pack' : '')); after && after();
+    await save(); closeModal(); toast(`Animal ${nom(a)} eliminado` + (l ? ' · devuelto a terneritos' : '')); after && after();
   });
 }
 
@@ -703,10 +714,10 @@ function lotsCardHTML(pl) {
   const list = DB.terneros.filter(l => !pl || l.placeId === pl);
   const total = list.reduce((n, l) => n + lotTotal(l), 0);
   return `<div class="card">
-    <div class="row"><h3 class="grow" style="margin:0">Terneros contados sin identificar${list.length ? ` (${total})` : ''}</h3><button class="btn sm" id="lotNew">+ Pack</button></div>
+    <div class="row"><h3 class="grow" style="margin:0">Terneros contados sin identificar${list.length ? ` (${total})` : ''}</h3><button class="btn sm" id="lotNew">+ Terneritos</button></div>
     <ul class="list">${list.map(l => `<li><div class="row"><div class="grow"><b>${lotTotal(l)}</b> · ${lotCounts(l)}
       <div class="small muted">${esc(placeName(l.placeId))} · contados ${fmt(l.date)}${l.obs ? ' · ' + esc(l.obs) : ''}</div></div>
-      <button class="btn ghost sm" data-lotmove="${l.id}">📍</button><button class="btn ghost sm" data-lotedit="${l.id}">✎</button></div></li>`).join('') || '<li class="muted">Sin packs. Con “+ Pack” cargás una cantidad de terneros contados.</li>'}</ul>
+      <button class="btn ghost sm" data-lotmove="${l.id}">📍</button><button class="btn ghost sm" data-lotedit="${l.id}">✎</button></div></li>`).join('') || '<li class="muted">Sin terneritos cargados. Con “+ Terneritos” cargás una cantidad de terneros contados.</li>'}</ul>
   </div>`;
 }
 function bindLots(v, after) {
@@ -715,7 +726,7 @@ function bindLots(v, after) {
   $$('[data-lotmove]', v).forEach(b => b.onclick = () => lotMove(lot(b.dataset.lotmove), after));
 }
 function lotForm(l, after) {
-  openModal(`<h2>${l ? 'Editar pack de terneros' : 'Terneros contados'}</h2>
+  openModal(`<h2>${l ? 'Editar terneritos' : 'Terneros contados'}</h2>
     <p class="small muted" style="margin:0">Cantidad contada sin número. Cuando se da de alta cada animal se puede descontar de acá.</p>
     <div class="row" style="gap:8px">
       <div class="grow"><label>♂ Machos</label><input id="lM" inputmode="numeric" value="${l ? l.m || 0 : 0}"></div>
@@ -727,7 +738,7 @@ function lotForm(l, after) {
     <label>Observación</label><input id="lObs" value="${esc(l?.obs || '')}" placeholder="Opcional">
     ${l && l.hist?.length ? `<h3>Historia</h3><ul class="list small">${[...l.hist].reverse().map(h => `<li>${fmt(h.date)} · ${esc(h.text)}</li>`).join('')}</ul>` : ''}
     <button class="btn block" id="lSave">Guardar</button>
-    ${l ? '<button class="btn danger ghost block" id="lDel">🗑 Eliminar pack</button>' : ''}
+    ${l ? '<button class="btn danger ghost block" id="lDel">🗑 Eliminar terneritos</button>' : ''}
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     const n = (id) => Math.floor(Number(onlyDigits($(id, m).value)) || 0);
     ['#lM', '#lH', '#lS'].forEach(s => $(s, m).addEventListener('input', e => e.target.value = onlyDigits(e.target.value)));
@@ -739,7 +750,7 @@ function lotForm(l, after) {
       await save(); closeModal(); after && after();
     };
     const del = $('#lDel', m);
-    if (del) del.onclick = () => askConfirm(`¿Eliminar este pack de ${lotTotal(l)} terneros?`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
+    if (del) del.onclick = () => askConfirm(`¿Eliminar estos ${lotTotal(l)} terneros?`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
       if (!ok) return; DB.terneros = DB.terneros.filter(x => x.id !== l.id); await save(); closeModal(); after && after();
     });
   });
@@ -756,7 +767,7 @@ function lotMove(l, after) {
       if (to === l.placeId) return toast('Ya están en ' + placeName(to));
       (l.hist ||= []).push({ date: $('#lmDate', m).value || today(), text: 'Traslado a ' + placeName(to) });
       l.placeId = to;
-      await save(); closeModal(); toast('Pack trasladado a ' + placeName(to)); after && after();
+      await save(); closeModal(); toast('Terneritos trasladados a ' + placeName(to)); after && after();
     };
   });
 }
@@ -782,7 +793,7 @@ function registerAnimal(q, after) {
     const desc = !!(l && l[f.lot.cat] > 0);
     if (desc) { a.fromLot = { id: l.id, cat: f.lot.cat }; l[f.lot.cat]--; (l.hist ||= []).push({ date: f.date, text: `Alta del animal ${nom(a)}: descuenta 1 (${LOT_CATS[f.lot.cat].toLowerCase()})` }); }
     await save();
-    toast(`Animal ${nom(a)} dado de alta` + (desc ? ' · descontado del pack' : ''));
+    toast(`Animal ${nom(a)} dado de alta` + (desc ? ' · descontado de terneritos' : ''));
     if (after) return after(a);
     lookup = { ...lookup, q: nom(a), animalId: a.id };
     render();
@@ -806,7 +817,7 @@ function animalForm(d, onSave) {
     <input id="fMother" maxlength="${ALIAS_MAX}" value="${esc(d.motherId && animal(d.motherId) ? nom(animal(d.motherId)) : '')}" placeholder="Opcional – elegí de la lista" list="fMotherList" autocomplete="off">
     <datalist id="fMotherList">${DB.animals.filter(x => x.id !== d.id && isActiveFlag(x) && x.sex !== 'M').sort(byAnimal).map(x => `<option value="${esc(nom(x))}">${esc(placeName(currentPlace(x)))}</option>`).join('')}</datalist>
     ${d.isNew && DB.terneros.some(l => lotTotal(l) > 0) ? `
-      <label>Descontar de un pack de terneros contados</label>
+      <label>Descontar de terneritos (terneros contados)</label>
       <select id="fLot"><option value="">— No descontar —</option>${DB.terneros.filter(l => lotTotal(l) > 0).map(l => `<option value="${l.id}">${esc(lotLabel(l))}</option>`).join('')}</select>
       <select id="fLotCat" class="hidden" style="margin-top:6px"></select>` : ''}
     ${d.isNew ? `
@@ -855,7 +866,7 @@ function animalForm(d, onSave) {
       }
       const lotId = lotSel?.value;
       const lotCat = lotId ? catSel.value : '';
-      if (lotId && !(lot(lotId)?.[lotCat] > 0)) return toast('Ese pack no tiene terneros en esa categoría');
+      if (lotId && !(lot(lotId)?.[lotCat] > 0)) return toast('Ahí no hay terneros en esa categoría');
       const kg = $('#fKg', m) ? parseKg($('#fKg', m).value) : null;
       if (Number.isNaN(kg)) return toast('Peso inválido');
       const vals = { idv, rfid, alias, sex, placeId: $('#fPlace', m)?.value, date: $('#fDate', m).value || today(), kg, obs: $('#fObs', m)?.value.trim() || '', motherId, cat, lot: lotId ? { id: lotId, cat: lotCat } : null };
