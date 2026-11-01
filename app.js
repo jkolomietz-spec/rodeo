@@ -457,10 +457,13 @@ function renderNewSession(v) {
       <button class="btn block" id="sStart">Iniciar sesión</button>
     </div>
     ${past.length ? `<div class="card"><h3 style="margin-top:0">Sesiones anteriores</h3><ul class="list">${past.map(s => `
-      <li><div class="row"><div class="grow"><b>${fmt(s.date)}</b> · ${esc(s.obs)}<div class="small muted">${s.placeId ? esc(placeName(s.placeId)) + ' · ' : ''}${sessionAnimalIds(s.id).length} relevados</div></div>
+      <li><div class="row"><div class="grow"><b>${fmt(s.date)}</b> · ${esc(s.obs)}<div class="small muted">${s.placeId ? esc(placeName(s.placeId)) + ' · ' : ''}${sessionAnimalIds(s.id).length} relevados</div></div></div>
+      <div class="row" style="justify-content:flex-end;margin-top:6px">
+      <button class="btn ghost sm" data-note="${s.id}">📝 Agregar observaciones</button>
       <button class="btn ghost sm" data-reopen="${s.id}">Reabrir</button>
       <button class="btn danger ghost sm" data-delses="${s.id}" aria-label="Eliminar sesión">🗑</button></div></li>`).join('')}</ul></div>` : ''}`;
   $$('[data-delses]', v).forEach(b => b.onclick = () => deleteSession(session(b.dataset.delses), render));
+  $$('[data-note]', v).forEach(b => b.onclick = () => sessionNote(session(b.dataset.note), '', null));
   $('#sStart').onclick = async () => {
     const obs = $('#sObs').value.trim().toUpperCase();
     if (!obs) return toast('Escribí la observación de la sesión');
@@ -1072,7 +1075,7 @@ function renderAnimales() {
   list.sort(byAnimal);
   const machos = list.filter(a => a.sex === 'M').length, hembras = list.filter(a => a.sex === 'H').length;
   v.innerHTML = `
-    <div class="row"><h2 class="grow">Animales</h2><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Comentar'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
+    <div class="row"><h2 class="grow">Animales</h2><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
     <div class="chips">${['activos', 'inactivos', 'incompletos', 'todos'].map(s => `<button data-st="${s}" class="${f.st === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
     <div class="row" style="margin-bottom:10px">
       <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número o texto…" value="${esc(f.q)}">
@@ -1099,7 +1102,7 @@ function renderAnimales() {
       const n = f.picked.size;
       $('#aCount').textContent = `${n} seleccionado${n === 1 ? '' : 's'}`;
       $('#aAll').checked = chks.length > 0 && chks.every(c => c.checked);
-      $('#aGo').textContent = `📝 Comentar ${n} seleccionado${n === 1 ? '' : 's'}`;
+      $('#aGo').textContent = `📝 Observación para ${n} seleccionado${n === 1 ? '' : 's'}`;
       $('#aGo').disabled = !n;
     };
     v.insertAdjacentHTML('beforeend', '<div class="sel-bar" style="bottom:calc(62px + env(safe-area-inset-bottom))"><button class="btn block" id="aGo" disabled></button></div>');
@@ -1229,6 +1232,11 @@ function renderReportes() {
   $('#rAll').onclick = () => exportAllCSV(pl);
 }
 
+function sessionNote(s, pl, after) {
+  const st = sessionStats(s, pl);
+  if (!st.ids.length && !st.outIds.length) return toast('Esa sesión no tiene animales relevados');
+  noteModal([...st.ids, ...st.outIds].map(animal).filter(Boolean), { sid: s.id, title: 'Observación de ' + s.obs, after });
+}
 const placeLabel = (s, st) => s.placeId ? placeName(s.placeId) : st.place ? `Todos los lugares (solo ${placeName(st.place)})` : 'Todos los lugares';
 function sessionReport(s, pl) {
   const st = sessionStats(s, pl);
@@ -1243,6 +1251,7 @@ function sessionReport(s, pl) {
       <div class="kpi"><b>${st.outIds.length}</b><small>Sacados</small></div>
       <div class="kpi"><b>${st.faltan.length}</b><small>Sin relevar</small></div>
     </div>
+    ${s.open ? '' : '<button class="btn block" id="srNote" style="margin-top:12px">📝 Agregar observaciones</button>'}
     <h3>Animales analizados</h3>
     <table class="rep"><tr><th>N°</th><th>Sexo</th><th>Kg</th><th>Observación</th></tr>
       ${recs.map(r => { const a = animal(r.animalId); return `<tr><td class="click" data-a="${a?.id}"><b>${esc(nom(a))}</b><div class="rfid">${esc(a?.rfid !== nom(a) ? a?.rfid : '')}</div></td><td>${a?.sex || ''}</td><td style="white-space:nowrap">${r.kg != null ? String(r.kg).replace('.', ',') : ''}</td><td>${esc(r.text) || '<span class="muted">—</span>'}</td></tr>`; }).join('') || '<tr><td colspan="4" class="muted">Sin registros</td></tr>'}
@@ -1252,11 +1261,10 @@ function sessionReport(s, pl) {
       ${st.outRecs.slice().sort((a, b) => byAnimal(animal(a.animalId), animal(b.animalId)) || a.ts.localeCompare(b.ts)).map(r => { const a = animal(r.animalId); return `<tr><td class="click" data-a="${a?.id}"><b>${esc(nom(a))}</b></td><td>${a?.sex || ''}</td><td style="white-space:nowrap">${r.kg != null ? String(r.kg).replace('.', ',') : ''}</td><td>${esc(r.text) || '<span class="muted">—</span>'}</td></tr>`; }).join('')}
     </table>` : ''}
     ${st.faltan.length ? `<h3>Sin relevar (${st.faltan.length})</h3><p class="small">${st.faltan.slice().sort(byAnimal).map(a => esc(nom(a))).join(', ')}</p>` : ''}
-    ${s.open ? '' : '<button class="btn block" id="srNote">📝 Agregar observación</button>'}
     <button class="btn block" id="srCsv">⬇ Exportar CSV</button>
     <button class="btn ghost block" id="srHist">⬇ Historia de estos animales</button>`, m => {
     const nb = $('#srNote', m);
-    if (nb) nb.onclick = () => noteModal([...st.ids, ...st.outIds].map(animal).filter(Boolean), { sid: s.id, title: 'Observación de ' + s.obs, after: () => sessionReport(s, pl) });
+    if (nb) nb.onclick = () => sessionNote(s, pl, () => sessionReport(s, pl));
     $('#srCsv', m).onclick = () => exportSessionCSV(s, pl);
     $('#srHist', m).onclick = () => exportHistoryCSV(st.ids.map(animal), `historia-${s.date}-${slug(s.obs)}`);
     $$('[data-a]', m).forEach(td => td.onclick = () => animalDetail(td.dataset.a, () => sessionReport(s, pl)));
