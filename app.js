@@ -970,6 +970,11 @@ function animalDetail(id, after) {
     <div class="row"><h2 class="grow" style="margin:0">Animal ${esc(nom(a))}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
     <div style="margin:8px 0">${animalLine(a)}</div>
     ${familyHTML(a)}
+    <div class="row wrap" style="margin:12px 0">
+      <button class="btn ghost sm" id="dEdit">✎ Editar</button>
+      <button class="btn ghost sm" id="dMove">📍 Trasladar</button>
+      ${isActiveFlag(a) ? '<button class="btn danger ghost sm" id="dOff">Dar de baja</button>' : '<button class="btn ghost sm" id="dOn">Reactivar</button>'}
+    </div>
     <div class="kpis" style="grid-template-columns:1fr 1fr">
       <div class="kpi"><b class="d">${fmt(p?.from)}</b><small>Activado</small></div>
       <div class="kpi"><b class="d">${p?.to ? fmt(p.to) : '—'}</b><small>${p?.to ? 'Baja: ' + esc(REASONS[p.reason]) : 'Sin baja'}</small></div>
@@ -977,10 +982,8 @@ function animalDetail(id, after) {
       <div class="kpi"><b class="d">${lw ? fmtKg(lw.kg) : '—'}</b><small>${lw ? 'Peso al ' + fmt(lw.date) : 'Sin peso'}</small></div>
     </div>
     ${p?.to && p.detail ? `<p class="small"><b>Detalle de baja:</b> ${esc(p.detail)}</p>` : ''}
-    <div class="row wrap" style="margin:12px 0">
-      <button class="btn ghost sm" id="dEdit">✎ Editar</button>
-      <button class="btn ghost sm" id="dMove">📍 Trasladar</button>
-      ${isActiveFlag(a) ? '<button class="btn danger ghost sm" id="dOff">Dar de baja</button>' : '<button class="btn ghost sm" id="dOn">Reactivar</button>'}
+    <div class="row wrap" style="margin:12px 0 0">
+      <button class="btn ghost sm" id="dNote">📝 Agregar observaciones</button>
       <button class="btn ghost sm" id="dCsv">⬇ CSV</button>
     </div>
     <h3>Historia</h3>
@@ -995,6 +998,7 @@ function animalDetail(id, after) {
     $('#dMove', m).onclick = () => moveAnimals([a.id], refresh);
     const off = $('#dOff', m); if (off) off.onclick = () => deactivate(a, refresh);
     const on = $('#dOn', m); if (on) on.onclick = () => reactivate(a, refresh);
+    $('#dNote', m).onclick = () => noteModal([a], { title: 'Observación ' + nom(a), after: refresh });
     $('#dCsv', m).onclick = () => exportAnimalCSV(a);
     bindTimeline(m, refresh);
   });
