@@ -1067,6 +1067,11 @@ function moveAnimals(ids, after, kgs = {}, dest) {
 }
 
 // ================= ANIMALES =================
+// texto en el que busca el buscador de Animales: observaciones, sesiones, detalle de baja y observaciones de traslados
+const flat = (s) => String(s ?? '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const animalTexts = (a) => [
+  ...DB.records.filter(r => r.animalId === a.id).flatMap(r => [r.text, session(r.sessionId)?.obs]),
+  ...a.places.map(e => e.obs), ...a.periods.map(p => p.detail)].filter(Boolean);
 let animFilter = { st: 'activos', q: '', sel: false, picked: new Set() };
 function renderAnimales() {
   const v = $('#view');
@@ -1075,14 +1080,14 @@ function renderAnimales() {
     (f.st === 'todos') || (f.st === 'activos' && isActive(a)) || (f.st === 'inactivos' && !isActiveFlag(a)) || (f.st === 'incompletos' && isActiveFlag(a) && (!isComplete(a) || !a.sex)));
   if (pl) list = list.filter(a => currentPlace(a) === pl);
   const t = normAlias(f.q).toLowerCase();
-  if (t) list = list.filter(a => (a.idv || '').includes(t) || (a.rfid || '').includes(t) || (a.alias || '').toLowerCase().includes(t));
+  if (t) { const q = flat(t); list = list.filter(a => (a.idv || '').includes(t) || (a.rfid || '').includes(t) || (a.alias || '').toLowerCase().includes(t) || animalTexts(a).some(x => flat(x).includes(q))); }
   list.sort(byAnimal);
   const machos = list.filter(a => a.sex === 'M').length, hembras = list.filter(a => a.sex === 'H').length;
   v.innerHTML = `
     <div class="row"><h2 class="grow">Animales</h2><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
     <div class="chips">${['activos', 'inactivos', 'incompletos', 'todos'].map(s => `<button data-st="${s}" class="${f.st === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
     <div class="row" style="margin-bottom:10px">
-      <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número o texto…" value="${esc(f.q)}">
+      <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número, texto u observación…" value="${esc(f.q)}">
       <select id="aPlace" style="width:45%">${placeOptions(pl, 'Todos los lugares')}</select>
     </div>
     ${lotsCardHTML(pl)}
@@ -1165,14 +1170,27 @@ function placeForm(p) {
   openModal(`<h2>${p ? 'Editar lugar' : 'Nuevo lugar'}</h2>
     <label>Nombre</label><input id="plName" value="${esc(p?.name || '')}" placeholder="Ej: Media chacra">
     <label>Fecha de ingreso / habilitación</label><input id="plDate" type="date" value="${p?.since || today()}">
+    <label>Cuadros <span class="muted">(opcional)</span></label>
+    ${p && DB.cuadros.some(c => c.placeId === p.id) ? `<p class="small muted" style="margin:0 0 4px">Ya tiene: ${DB.cuadros.filter(c => c.placeId === p.id).sort(byName).map(c => esc(c.name)).join(', ')}</p>` : ''}
+    <input id="plCuad" placeholder="Nombres separados por coma. Ej: A1, A2, B1" autocapitalize="characters">
+    <div class="row" style="margin-top:6px"><input id="plPre" class="grow" placeholder="o prefijo (Ej: L)" autocapitalize="characters" style="min-width:0"><input id="plCnt" inputmode="numeric" placeholder="Cantidad" style="width:100px"></div>
+    <p class="small muted" style="margin:4px 0 0">Con prefijo y cantidad se crean numerados: L1, L2, L3… También se pueden agregar después desde Cuadros o editando el lugar.</p>
     <button class="btn block" id="plSave">Guardar</button>
     ${p && !DB.animals.some(a => a.places.some(e => e.placeId === p.id)) && !DB.sessions.some(s => s.placeId === p.id) ? '<button class="btn danger ghost block" id="plDel">Eliminar lugar</button>' : ''}
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     $('#plSave', m).onclick = async () => {
       const name = $('#plName', m).value.trim(); if (!name) return toast('Poné un nombre');
+      const pl = p || { id: uid(), name, since: $('#plDate', m).value || today() };
       if (p) { p.name = name; p.since = $('#plDate', m).value || p.since; }
-      else DB.places.push({ id: uid(), name, since: $('#plDate', m).value || today() });
+      else DB.places.push(pl);
+      const names = $('#plCuad', m).value.split(/[,;\n]+/).map(x => x.trim().toUpperCase()).filter(Boolean);
+      const pre = $('#plPre', m).value.trim().toUpperCase(), cnt = parseInt(onlyDigits($('#plCnt', m).value), 10) || 0;
+      if (pre && cnt) for (let i = 1; i <= Math.min(cnt, 200); i++) names.push(pre + i);
+      DB.cuadros = DB.cuadros || [];
+      let n = 0;
+      for (const nm of names) if (!DB.cuadros.some(c => c.placeId === pl.id && c.name === nm)) { DB.cuadros.push({ id: uid(), placeId: pl.id, name: nm }); n++; }
       await save(); closeModal(); render();
+      if (n) toast(`${n} cuadro${n === 1 ? '' : 's'} agregado${n === 1 ? '' : 's'}`);
     };
     const del = $('#plDel', m);
     if (del) del.onclick = async () => { DB.places = DB.places.filter(x => x.id !== p.id); await save(); closeModal(); render(); };
@@ -1363,8 +1381,7 @@ function renderCuadros() {
     .sort((a, b) => a.st.lastOut.salida.localeCompare(b.st.lastOut.salida) || byName(a.c, b.c))
     .slice(0, 4).forEach((x, i) => rest[x.c.id] = 4 - i);
   v.innerHTML = `
-    <div class="row"><h2 class="grow">Cuadros</h2><button class="btn sm" id="cNew">+ Registrar</button></div>
-    <div class="chips">${places.map(p => `<button data-pl="${p.id}" class="${p.id === cuadrosPlace ? 'on' : ''}">${esc(p.name)}</button>`).join('')}</div>
+    <div class="row"><h2 class="grow">Cuadros</h2><select id="cPlace" style="width:45%">${places.map(p => `<option value="${p.id}" ${p.id === cuadrosPlace ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select><button class="btn sm" id="cNew">+ Registrar</button></div>
     <p class="small muted" style="margin-top:0">${list.length} cuadros · ${ocupados} ocupados. Se muestra la <b>última salida</b> de animales de cada cuadro; tocá uno para ver su historia o registrar ingreso/salida.</p>
     <div class="chips"><button data-vw="grid" class="${cuadrosView === 'grid' ? 'on' : ''}">▦ Cuadros</button><button data-vw="list" class="${cuadrosView === 'list' ? 'on' : ''}">☰ Listado</button><button data-vw="hist" class="${cuadrosView === 'hist' ? 'on' : ''}">📊 Histograma</button></div>
     ${cuadrosView === 'hist' ? (() => {
@@ -1404,7 +1421,7 @@ function renderCuadros() {
       <i class="rest1"></i><i class="rest2"></i><i class="rest3"></i><i class="rest4"></i><span>menos → más días</span></div>` : ''}
     <button class="btn ghost block" id="cCsv">⬇ Exportar informe CSV</button>
     <button class="btn ghost block" id="cAdd">+ Agregar cuadro</button>`;
-  $$('[data-pl]', v).forEach(b => b.onclick = () => { cuadrosPlace = b.dataset.pl; renderCuadros(); });
+  $('#cPlace').onchange = e => { cuadrosPlace = e.target.value; renderCuadros(); };
   $$('[data-vw]', v).forEach(b => b.onclick = () => { cuadrosView = b.dataset.vw; renderCuadros(); });
   $$('[data-c]', v).forEach(b => b.onclick = () => cuadroDetail(b.dataset.c));
   $('#cNew').onclick = () => pastoreoForm(null, null, renderCuadros);
@@ -1452,7 +1469,9 @@ function cuadroDetail(cid) {
 function pastoreoForm(p, cid, after, salidaNow) {
   const isNew = !p;
   const pre = cid || p?.cuadroId;
-  const placesWith = DB.places.filter(pl => DB.cuadros.some(c => c.placeId === pl.id));
+  // solo los cuadros del lugar que se está mirando (o el del cuadro que se edita)
+  const pid = cuadro(pre)?.placeId || cuadrosPlace;
+  const placesWith = DB.places.filter(pl => pl.id === pid && DB.cuadros.some(c => c.placeId === pl.id));
   const picker = isNew
     ? `<label>Cuadros <span class="muted">(tildá uno o varios)</span></label>
        ${placesWith.map(pl => `<div class="small muted" style="margin:6px 0 4px">${esc(pl.name)}</div>
