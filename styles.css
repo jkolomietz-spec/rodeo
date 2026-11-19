@@ -210,3 +210,7 @@ table.rep tr.occ-row { background: var(--amber-soft); }
 .cpick label:has(input:checked) { background: var(--green-soft); border-color: var(--green); }
 .cdrop { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); }
 .cdrop summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
+.kpis.mini { grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.kpis.mini .kpi { padding: 3px 2px; border-radius: 8px; }
+.kpis.mini .kpi b { font-size: 15px; }
+.kpis.mini .kpi small { font-size: 10px; }

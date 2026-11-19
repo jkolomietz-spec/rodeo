@@ -801,9 +801,9 @@ function lotsCardHTML(pl, st) {
   const total = list.reduce((n, l) => n + lotTotal(l), 0);
   return `<div class="card">
     <div class="row"><h3 class="grow" style="margin:0">Terneros contados sin identificar${list.length ? ` (${total})` : ''}</h3><button class="btn sm" id="lotNew">+ Terneritos</button></div>
-    <ul class="list">${list.map(l => `<li><div class="row"><div class="grow"><b>${lotTotal(l)}</b> · ${lotCounts(l)}
+    <ul class="list">${list.map(l => `<li><div><b>${lotTotal(l)}</b> · ${lotCounts(l)}
       <div class="small muted">${esc(placeName(l.placeId))} · contados ${fmt(l.date)}${l.obs ? ' · ' + esc(l.obs) : ''}</div></div>
-      <button class="btn ghost sm" data-lotview="${l.id}" aria-label="Ver historial">👁</button><button class="btn ghost sm" data-lotedit="${l.id}" aria-label="Editar">✎</button>${l.ended ? `<button class="btn ghost sm" data-lotreopen="${l.id}" aria-label="Reactivar">↩</button>` : `<button class="btn ghost sm" data-lotmove="${l.id}" aria-label="Trasladar">📍</button><button class="btn ghost sm" data-lotend="${l.id}" aria-label="Fin campaña">🏁 Fin campaña</button>`}</div></li>`).join('') || '<li class="muted">Sin terneritos cargados. Con “+ Terneritos” cargás una cantidad de terneros contados.</li>'}</ul>
+      <div class="row wrap" style="margin-top:6px"><button class="btn ghost sm" data-lotview="${l.id}" aria-label="Ver historial">👁</button><button class="btn ghost sm" data-lotedit="${l.id}" aria-label="Editar">✎</button>${l.ended ? `<button class="btn ghost sm" data-lotreopen="${l.id}" aria-label="Reactivar">↩</button>` : `<button class="btn ghost sm" data-lotmove="${l.id}" aria-label="Trasladar">📍</button><button class="btn ghost sm" data-lotend="${l.id}" aria-label="Fin campaña">🏁 Fin campaña</button>`}</div></li>`).join('') || '<li class="muted">Sin terneritos cargados. Con “+ Terneritos” cargás una cantidad de terneros contados.</li>'}</ul>
   </div>`;
 }
 function bindLots(v, after) {
@@ -1173,7 +1173,8 @@ function renderAnimales() {
     </div>
     ${lotsCardHTML(pl, f.st)}
     <div class="card">
-      <div class="row" style="margin-bottom:6px"><p class="small muted grow" style="margin:0">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
+      <p class="small muted" style="margin:0 0 6px">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p>
+      <div class="row wrap" style="margin-bottom:6px"><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
       ${f.sel ? `<label class="row sel-all"><input type="checkbox" id="aAll"> <span class="grow">Seleccionar todos los de la lista</span> <b id="aCount"></b></label>` : ''}
       <ul class="list">${list.slice(0, 300).map(a => f.sel
         ? `<li class="row sel-row"><label class="row grow" style="margin:0;color:var(--ink)"><input type="checkbox" class="aChk" value="${a.id}" ${f.picked.has(a.id) ? 'checked' : ''}><span class="grow">${animalLine(a)}</span></label></li>`
@@ -1339,8 +1340,10 @@ function renderReportes() {
     { k: 'v', t: repDated() ? 'Vendidos en el rango' : 'Vendidos', l: byReason('vendido') }, { k: 'mu', t: repDated() ? 'Muertos en el rango' : 'Muertos', l: byReason('muerto') }, { k: 'o', t: repDated() ? 'Otras bajas en el rango' : 'Otras bajas', l: byReason('otro') }];
   v.innerHTML = `
     <h2>Reportes</h2>
-    <div class="row" style="align-items:center;margin-bottom:8px"><div class="chips grow" style="margin:0">${['activos', 'inactivos', 'todos'].map(x => `<button data-rst="${x}" class="${repF.st === x ? 'on' : ''}">${x[0].toUpperCase() + x.slice(1)}</button>`).join('')}</div><select id="rPlace" style="width:42%">${placeOptions(pl, 'Todos los lugares')}</select></div>
-    <div class="row" style="gap:8px"><div class="grow"><label>Desde</label><input type="date" id="rFrom" value="${repF.from}"></div><div class="grow"><label>Hasta</label><input type="date" id="rTo" value="${repF.to}"></div><button class="btn ghost sm" id="rToday" style="align-self:flex-end">Hoy</button></div>
+    <div class="row" style="align-items:center;margin-bottom:8px"><div class="chips grow" style="margin:0">${['activos', 'inactivos', 'todos'].map(x => `<button data-rst="${x}" class="${repF.st === x ? 'on' : ''}">${x[0].toUpperCase() + x.slice(1)}</button>`).join('')}</div></div>
+    <select id="rPlace" style="margin-bottom:8px">${placeOptions(pl, 'Todos los lugares')}</select>
+    <div class="row" style="gap:8px"><div class="grow"><label>Desde</label><input type="date" id="rFrom" value="${repF.from}"></div><div class="grow"><label>Hasta</label><input type="date" id="rTo" value="${repF.to}"></div></div>
+    <button class="btn ghost sm" id="rToday" style="margin:8px 0">Hoy</button>
     ${repF.from || repF.to ? `<p class="small muted" style="margin:4px 0 8px">Activos, inactivos y terneritos: situación al final de la fecha "Hasta" (hoy si la dejás vacía). Vendidos, muertos y otras bajas: las ocurridas entre "Desde" y "Hasta".</p>` : ''}
     <div class="card">
       <h3 style="margin-top:0">Resumen${repF.st === 'activos' && !repF.from && !repF.to ? ' actual' : ''}${pl ? ' – ' + esc(placeName(pl)) : ''}</h3>
@@ -1359,7 +1362,7 @@ function renderReportes() {
             <div class="kpi" style="${y}"><b>${muerte}</b><small>Terneritos: bajas por muerte${repDated() ? ' en el rango' : ''}</small></div>
             <div class="kpi" style="${y}"><b>${conteo}</b><small>Terneritos: bajas por conteo${repDated() ? ' en el rango' : ''}</small></div></div>`; }
         const t = repLots(pl); const sum = k => t.reduce((n, x) => n + (x[k] || 0), 0);
-        return `<div class="kpis" style="margin-top:8px">
+        return `<div class="kpis mini" style="margin-top:8px">
         <div class="kpi"><b>${sum('m') + sum('h') + sum('s')}</b><small>Terneritos</small></div>
         <div class="kpi"><b>${sum('h')}</b><small>Hembras</small></div>
         <div class="kpi"><b>${sum('m')}</b><small>Machos</small></div>
