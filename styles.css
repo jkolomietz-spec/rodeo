@@ -208,3 +208,5 @@ table.rep tr.occ-row { background: var(--amber-soft); }
 .cpick label.occ { border-color: var(--amber); }
 .cpick input { width: 20px; height: 20px; accent-color: var(--green); flex: 0 0 auto; }
 .cpick label:has(input:checked) { background: var(--green-soft); border-color: var(--green); }
+.cdrop { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); }
+.cdrop summary { cursor: pointer; font-weight: 700; padding: 4px 0; }

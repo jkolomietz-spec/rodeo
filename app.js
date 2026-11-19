@@ -205,7 +205,7 @@ function animalTags(a) {
   const t = [];
   if (isActive(a)) t.push('<span class="tag">ACTIVO</span>');
   else if (isActiveFlag(a)) t.push('<span class="tag warn">INCOMPLETO</span>');
-  else { const p = lastPeriod(a); t.push(`<span class="tag off">${esc((REASONS[p?.reason] || 'INACTIVO').toUpperCase())}</span>`); }
+  else { const p = lastPeriod(a); t.push(`<span class="tag ${p?.reason === 'vendido' ? 'warn' : 'off'}">${esc((REASONS[p?.reason] || 'INACTIVO').toUpperCase())}${p?.to ? ' · ' + fmt(p.to) : ''}</span>`); }
   return t.join(' ');
 }
 function animalLine(a) {
@@ -228,7 +228,7 @@ function renderHeader() {
   const cnt = (f) => act.filter(f).length;
   const cat = (c) => `<span>${c} <b>${cnt(a => a.cat === c)}</b></span>`;
   const sinCat = cnt(a => !a.cat);
-  const packs = DB.terneros.filter(l => !pl || l.placeId === pl);
+  const packs = DB.terneros.filter(l => !l.ended && (!pl || l.placeId === pl));
   const pk = (k) => packs.reduce((n, l) => n + (l[k] || 0), 0);
   const packTotal = pk('h') + pk('m') + pk('s');
   const open = !!DB.settings.statOpen;
@@ -794,24 +794,73 @@ const lot = (id) => DB.terneros.find(l => l.id === id);
 const lotTotal = (l) => (l.m || 0) + (l.h || 0) + (l.s || 0);
 const lotCounts = (l) => `♂ ${l.m || 0} · ♀ ${l.h || 0} · ? ${l.s || 0}`;
 const lotLabel = (l) => `${placeName(l.placeId)} · ${lotTotal(l)} (${lotCounts(l)}) · ${fmt(l.date)}`;
-const lotsIn = (pl) => DB.terneros.filter(l => l.placeId === pl).reduce((n, l) => n + lotTotal(l), 0);
-function lotsCardHTML(pl) {
-  const list = DB.terneros.filter(l => !pl || l.placeId === pl);
+const lotsIn = (pl) => DB.terneros.filter(l => !l.ended && l.placeId === pl).reduce((n, l) => n + lotTotal(l), 0);
+function lotsCardHTML(pl, st) {
+  // activos / incompletos: campaña en curso; inactivos: terneritos con fin de campaña; todos: ambos
+  const list = DB.terneros.filter(l => (!pl || l.placeId === pl) && (st === 'todos' || (st === 'inactivos') === !!l.ended));
   const total = list.reduce((n, l) => n + lotTotal(l), 0);
   return `<div class="card">
     <div class="row"><h3 class="grow" style="margin:0">Terneros contados sin identificar${list.length ? ` (${total})` : ''}</h3><button class="btn sm" id="lotNew">+ Terneritos</button></div>
     <ul class="list">${list.map(l => `<li><div class="row"><div class="grow"><b>${lotTotal(l)}</b> · ${lotCounts(l)}
       <div class="small muted">${esc(placeName(l.placeId))} · contados ${fmt(l.date)}${l.obs ? ' · ' + esc(l.obs) : ''}</div></div>
-      <button class="btn ghost sm" data-lotmove="${l.id}">📍</button><button class="btn ghost sm" data-lotedit="${l.id}">✎</button></div></li>`).join('') || '<li class="muted">Sin terneritos cargados. Con “+ Terneritos” cargás una cantidad de terneros contados.</li>'}</ul>
+      <button class="btn ghost sm" data-lotview="${l.id}" aria-label="Ver historial">👁</button><button class="btn ghost sm" data-lotedit="${l.id}" aria-label="Editar">✎</button>${l.ended ? `<button class="btn ghost sm" data-lotreopen="${l.id}" aria-label="Reactivar">↩</button>` : `<button class="btn ghost sm" data-lotmove="${l.id}" aria-label="Trasladar">📍</button><button class="btn ghost sm" data-lotend="${l.id}" aria-label="Fin campaña">🏁 Fin campaña</button>`}</div></li>`).join('') || '<li class="muted">Sin terneritos cargados. Con “+ Terneritos” cargás una cantidad de terneros contados.</li>'}</ul>
   </div>`;
 }
 function bindLots(v, after) {
   $('#lotNew', v).onclick = () => { if (!DB.places.length) return toast('Primero creá un lugar'); lotForm(null, after); };
+  $$('[data-lotend]', v).forEach(b => b.onclick = async () => {
+    const l = lot(b.dataset.lotend);
+    if (!(await askConfirm(`¿Dar fin de campaña a estos ${lotTotal(l)} terneros? Pasan a Inactivos.`, { ok: 'Fin campaña' }))) return;
+    l.ended = today(); (l.hist ||= []).push({ date: l.ended, text: `Fin de campaña (${lotCounts(l)})` });
+    await save(); toast('Terneritos pasados a Inactivos'); after && after();
+  });
+  $$('[data-lotreopen]', v).forEach(b => b.onclick = async () => {
+    const l = lot(b.dataset.lotreopen); delete l.ended; (l.hist ||= []).push({ date: today(), text: 'Reactivados (vuelven a campaña)' });
+    await save(); toast('Terneritos reactivados'); after && after();
+  });
+  $$('[data-lotview]', v).forEach(b => b.onclick = () => lotView(lot(b.dataset.lotview)));
   $$('[data-lotedit]', v).forEach(b => b.onclick = () => lotForm(lot(b.dataset.lotedit), after));
   $$('[data-lotmove]', v).forEach(b => b.onclick = () => lotMove(lot(b.dataset.lotmove), after));
 }
+function lotView(l) {
+  if (!l) return;
+  const h = [...(l.hist || [])].sort((a, b) => b.date.localeCompare(a.date));
+  // totales sumados desde el texto del historial
+  const tot = { altaConteo: 0, muerte: 0, bajaConteo: 0, altaAnimal: 0 };
+  for (const x of l.hist || []) {
+    let r;
+    if ((r = /^Alta por conteo: \+(\d+)/.exec(x.text))) tot.altaConteo += +r[1];
+    else if ((r = /^Baja por muerte: (\d+)/.exec(x.text))) tot.muerte += +r[1];
+    else if ((r = /^Baja por conteo: -(\d+)/.exec(x.text))) tot.bajaConteo += +r[1];
+    else if (/^Alta del animal .*descuenta 1/.test(x.text)) tot.altaAnimal += 1;
+    else if (/^Se eliminó el animal .*suma 1 de vuelta/.test(x.text)) tot.altaAnimal -= 1;
+  }
+  openModal(`<div class="row"><h2 class="grow" style="margin:0">Historial de terneritos</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    <p class="small muted">${esc(placeName(l.placeId))} · contados ${fmt(l.date)}${l.obs ? ' · ' + esc(l.obs) : ''}</p>
+    <div class="card">
+      <p class="small" style="margin:0 0 6px"><b>Resumen de conteo:</b> ${[['Altas por conteo', '+', tot.altaConteo], ['Bajas por muerte', '−', tot.muerte], ['Bajas por conteo', '−', tot.bajaConteo], ['Pasaje a siguiente categoría', '−', tot.altaAnimal]].map(([t, s, n]) => `${t}: <b>${s}${n}</b>`).join(' · ')}</p>
+      <p style="margin:0"><b>Resumen actual:</b> ${lotTotal(l)} (${lotCounts(l)})</p>
+    </div>
+    <h3>Historial detallado</h3>
+    ${h.length ? `<ul class="list">${h.map(x => `<li><b>${fmt(x.date)}</b> · ${esc(x.text)}</li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}`);
+}
 function lotForm(l, after) {
   openModal(`<h2>${l ? 'Editar terneritos' : 'Terneros contados'}</h2>
+    ${l ? `<p class="small muted" style="margin:0">${esc(placeName(l.placeId))} · contados ${fmt(l.date)} · <b>${lotTotal(l)}</b> (${lotCounts(l)})${l.obs ? ' · ' + esc(l.obs) : ''}</p>` : ''}
+    ${l ? `<h3>Alta o baja</h3>
+      <div class="row" style="gap:8px">
+        <div class="grow"><label>Movimiento</label><select id="lbType"><option value="baja">Baja</option><option value="alta">Alta</option></select></div>
+        <div class="grow"><label>Motivo</label><select id="lbWhy"></select></div>
+      </div>
+      <div class="row" style="gap:8px">
+        <div class="grow"><label>Fecha</label><input id="lbDate" type="date" value="${today()}"></div>
+        <div class="grow"><label>Cantidad</label><input id="lbN" inputmode="numeric" placeholder="Ej: 1"></div>
+      </div>
+      <div id="lbSexBox"><label>El ternero muerto era</label><select id="lbSex"><option value="m">♂ Macho</option><option value="h">♀ Hembra</option><option value="s">? No se sabe</option></select></div>
+      <label id="lbCatL">Se resta de</label><select id="lbCat"><option value="m">♂ Machos (${l.m || 0})</option><option value="h">♀ Hembras (${l.h || 0})</option><option value="s">? Sin identificar (${l.s || 0})</option></select>
+      <button class="btn danger block" id="lbSave" style="margin-top:8px">Registrar baja</button>
+      <div class="row" style="margin-top:14px"><h3 class="grow" style="margin:0">Datos de los terneritos</h3><button class="btn ghost sm" id="lEditToggle" aria-label="Editar datos">✎</button></div>` : ''}
+    <div id="lFields" style="${l ? 'display:none' : ''}">
     <p class="small muted" style="margin:0">Cantidad contada sin número. Cuando se da de alta cada animal se puede descontar de acá.</p>
     <div class="row" style="gap:8px">
       <div class="grow"><label>♂ Machos</label><input id="lM" inputmode="numeric" value="${l ? l.m || 0 : 0}"></div>
@@ -821,8 +870,9 @@ function lotForm(l, after) {
     <label>Lugar</label><select id="lPlace">${placeOptions(l ? l.placeId : curPlace() || DB.places[0]?.id)}</select>
     <label>Fecha del conteo</label><input id="lDate" type="date" value="${l ? l.date : (openSession()?.date || today())}">
     <label>Observación</label><input id="lObs" value="${esc(l?.obs || '')}" placeholder="Opcional">
-    ${l && l.hist?.length ? `<h3>Historia</h3><ul class="list small">${[...l.hist].reverse().map(h => `<li>${fmt(h.date)} · ${esc(h.text)}</li>`).join('')}</ul>` : ''}
     <button class="btn block" id="lSave">Guardar</button>
+    </div>
+    ${l && l.hist?.length ? `<h3>Historia</h3><ul class="list small">${[...l.hist].reverse().map(h => `<li>${fmt(h.date)} · ${esc(h.text)}</li>`).join('')}</ul>` : ''}
     ${l ? '<button class="btn danger ghost block" id="lDel">🗑 Eliminar terneritos</button>' : ''}
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     const n = (id) => Math.floor(Number(onlyDigits($(id, m).value)) || 0);
@@ -834,6 +884,37 @@ function lotForm(l, after) {
       else DB.terneros.push({ id: uid(), ...vals, hist: [{ date: vals.date, text: `Conteo en ${placeName(vals.placeId)}: ${lotCounts(vals)}` }] });
       await save(); closeModal(); after && after();
     };
+    const tg = $('#lEditToggle', m);
+    if (tg) tg.onclick = () => { const f = $('#lFields', m); f.style.display = f.style.display === 'none' ? '' : 'none'; };
+    const lb = $('#lbSave', m);
+    if (lb) {
+      $('#lbN', m).addEventListener('input', e => e.target.value = onlyDigits(e.target.value));
+      $('#lbSex', m).onchange = e => { $('#lbCat', m).value = e.target.value; };   // por defecto se resta de la categoría del mismo sexo; se puede cambiar (ej. hembra restada de "sin identificar")
+      const typ = () => $('#lbType', m).value, why = () => $('#lbWhy', m).value;
+      const sync = (fromType) => {
+        const alta = typ() === 'alta';
+        if (fromType) $('#lbWhy', m).innerHTML = alta ? '<option value="conteo">Conteo</option>' : '<option value="muerte">Muerte</option><option value="conteo">Conteo</option>';
+        $('#lbSexBox', m).style.display = !alta && why() === 'muerte' ? '' : 'none';
+        $('#lbCatL', m).textContent = alta ? 'Se suma a' : 'Se resta de';
+        lb.textContent = alta ? 'Registrar alta' : 'Registrar baja'; lb.className = 'btn block ' + (alta ? '' : 'danger');
+      };
+      $('#lbType', m).onchange = () => sync(true); $('#lbWhy', m).onchange = () => sync(false); sync(true);
+      lb.onclick = async () => {
+        const alta = typ() === 'alta', muerte = !alta && why() === 'muerte';
+        const cat = $('#lbCat', m).value, k = Math.floor(Number($('#lbN', m).value) || 0), date = $('#lbDate', m).value;
+        if (!date) return toast('Poné la fecha');
+        if (k < 1) return toast('Poné la cantidad');
+        if (!alta && k > (l[cat] || 0)) return toast(`Solo hay ${l[cat] || 0} en ${LOT_CATS[cat].toLowerCase()}`);
+        l[cat] = (l[cat] || 0) + (alta ? k : -k);
+        const sex = $('#lbSex', m).value, cn = LOT_CATS[cat].toLowerCase();
+        const text = alta ? `Alta por conteo: +${k} (sumado a ${cn})`
+          : muerte ? `Baja por muerte: ${k} · eran ${sex === 'm' ? 'machos' : sex === 'h' ? 'hembras' : 'sin determinar sexo'} · restado de ${cn}`
+          : `Baja por conteo: -${k} (restado de ${cn})`;
+        if (muerte) (l.bajas ||= []).push({ date, cat, sex, n: k, reason: 'muerto' });
+        (l.hist ||= []).push({ date, text });
+        await save(); closeModal(); toast(text); after && after();
+      };
+    }
     const del = $('#lDel', m);
     if (del) del.onclick = () => askConfirm(`¿Eliminar estos ${lotTotal(l)} terneros?`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
       if (!ok) return; DB.terneros = DB.terneros.filter(x => x.id !== l.id); await save(); closeModal(); after && after();
@@ -901,9 +982,9 @@ function animalForm(d, onSave) {
     <label>Madre (N° de un animal del campo)</label>
     <input id="fMother" maxlength="${ALIAS_MAX}" value="${esc(d.motherId && animal(d.motherId) ? nom(animal(d.motherId)) : '')}" placeholder="Opcional – elegí de la lista" list="fMotherList" autocomplete="off">
     <datalist id="fMotherList">${DB.animals.filter(x => x.id !== d.id && isActiveFlag(x) && x.sex !== 'M').sort(byAnimal).map(x => `<option value="${esc(nom(x))}">${esc(placeName(currentPlace(x)))}</option>`).join('')}</datalist>
-    ${d.isNew && DB.terneros.some(l => lotTotal(l) > 0) ? `
+    ${d.isNew && DB.terneros.some(l => !l.ended && lotTotal(l) > 0) ? `
       <label>Descontar de terneritos (terneros contados)</label>
-      <select id="fLot"><option value="">— No descontar —</option>${DB.terneros.filter(l => lotTotal(l) > 0).map(l => `<option value="${l.id}">${esc(lotLabel(l))}</option>`).join('')}</select>
+      <select id="fLot"><option value="">— No descontar —</option>${DB.terneros.filter(l => !l.ended && lotTotal(l) > 0).map(l => `<option value="${l.id}">${esc(lotLabel(l))}</option>`).join('')}</select>
       <select id="fLotCat" class="hidden" style="margin-top:6px"></select>` : ''}
     ${d.isNew ? `
       <label>Lugar</label><select id="fPlace">${placeOptions(d.placeId)}</select>
@@ -1084,15 +1165,15 @@ function renderAnimales() {
   list.sort(byAnimal);
   const machos = list.filter(a => a.sex === 'M').length, hembras = list.filter(a => a.sex === 'H').length;
   v.innerHTML = `
-    <div class="row"><h2 class="grow">Animales</h2><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
+    <h2>Animales</h2>
     <div class="chips">${['activos', 'inactivos', 'incompletos', 'todos'].map(s => `<button data-st="${s}" class="${f.st === s ? 'on' : ''}">${s[0].toUpperCase() + s.slice(1)}</button>`).join('')}</div>
     <div class="row" style="margin-bottom:10px">
       <input id="aQ" class="grow" maxlength="${ALIAS_MAX}" placeholder="Buscar número, texto u observación…" value="${esc(f.q)}">
       <select id="aPlace" style="width:45%">${placeOptions(pl, 'Todos los lugares')}</select>
     </div>
-    ${lotsCardHTML(pl)}
+    ${lotsCardHTML(pl, f.st)}
     <div class="card">
-      <p class="small muted" style="margin:0 0 6px">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p>
+      <div class="row" style="margin-bottom:6px"><p class="small muted grow" style="margin:0">${list.length} animales · ♂ ${machos} · ♀ ${hembras}</p><button class="btn ghost sm" id="aSel">${f.sel ? '✕ Cancelar' : '📝 Agregar observaciones'}</button><button class="btn sm" id="aNew">+ Alta</button></div>
       ${f.sel ? `<label class="row sel-all"><input type="checkbox" id="aAll"> <span class="grow">Seleccionar todos los de la lista</span> <b id="aCount"></b></label>` : ''}
       <ul class="list">${list.slice(0, 300).map(a => f.sel
         ? `<li class="row sel-row"><label class="row grow" style="margin:0;color:var(--ink)"><input type="checkbox" class="aChk" value="${a.id}" ${f.picked.has(a.id) ? 'checked' : ''}><span class="grow">${animalLine(a)}</span></label></li>`
@@ -1214,26 +1295,80 @@ function sessionStats(s, pl) {
   const kgAvg = kgs.length ? Math.round(kgs.reduce((t, k) => t + k, 0) / kgs.length * 10) / 10 : null;
   return { activos, ids, recs, outIds, outRecs, place: sp, faltan: activos.filter(a => !ids.includes(a.id) && !outIds.includes(a.id)), kgAvg, kgN: kgs.length };
 }
+let repF = { st: 'activos', from: '', to: '' };
+const repDated = () => !!(repF.from || repF.to);
+const repEnd = () => repF.to || today();   // fecha "hasta" (hoy si no se puso)
+// estado al final de la fecha "hasta"
+function repMatch(a) {
+  const f = repF;
+  if (!repDated()) return f.st === 'todos' || (f.st === 'activos' ? isActive(a) : !isActiveFlag(a));
+  const to = repEnd();
+  const act = activeAt(a, to);
+  const ina = !act && a.periods.some(p => p.from <= to);
+  return f.st === 'todos' ? act || ina : f.st === 'activos' ? act : ina;
+}
+const repPlace = (a) => repDated() ? placeAt(a, repEnd()) : currentPlace(a);
+// bajas (vendido / muerto / otro) ocurridas en el rango; sin fechas, las bajas actuales
+function repBajas(pl, reason) {
+  const from = repF.from || '0000-00-00', to = repF.to || '9999-12-31';
+  return DB.animals.filter(a => {
+    if (!repDated()) return !isActiveFlag(a) && lastPeriod(a).reason === reason && (!pl || currentPlace(a) === pl);
+    return a.periods.some(p => p.to && p.to >= from && p.to <= to && p.reason === reason && (!pl || placeAt(a, p.to) === pl));
+  });
+}
+// terneritos: lugar según el historial a la fecha "hasta"; se cuentan los conteos hechos hasta esa fecha
+function lotPlaceAt(l) {
+  if (!repDated()) return l.placeId;
+  const to = repEnd(); let pid = l.placeId;
+  for (const h of (l.hist || []).slice().sort((x, y) => x.date.localeCompare(y.date))) {
+    if (h.date > to) break;
+    const m = /^(?:Conteo en |Traslado a |Corregido a )(.+?)(?::|$)/.exec(h.text || '');
+    const p = m && DB.places.find(x => x.name === m[1].trim()); if (p) pid = p.id;
+  }
+  return pid;
+}
+const repLots = (pl) => DB.terneros.filter(x => !x.ended && (!repDated() || x.date <= repEnd()) && (!pl || lotPlaceAt(x) === pl));
 function renderReportes() {
   const v = $('#view'), pl = curPlace();
   const ses = DB.sessions.filter(s => !pl || !s.placeId || s.placeId === pl).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
-  const act = activeAnimals(pl);
-  const bajas = DB.animals.filter(a => !isActiveFlag(a) && inPlace(a, pl));
-  const byReason = r => bajas.filter(a => lastPeriod(a).reason === r).length;
+  const base = DB.animals.filter(a => (!pl || repPlace(a) === pl) && repMatch(a));
+  const baseSex = repF.st === 'todos' ? base.filter(a => repDated() ? activeAt(a, repEnd()) : isActive(a)) : base;   // en "Todos", ♀/♂ son los activos
+  const byReason = r => repBajas(pl, r);
+  const kpiGroups = [
+    { k: 'act', t: { todos: 'Total', activos: 'Activos', inactivos: 'Inactivos' }[repF.st], l: base }, { k: 'h', t: repF.st === 'todos' ? 'Hembras activas' : 'Hembras', l: baseSex.filter(a => a.sex === 'H') }, { k: 'm', t: repF.st === 'todos' ? 'Machos activos' : 'Machos', l: baseSex.filter(a => a.sex === 'M') },
+    { k: 'v', t: repDated() ? 'Vendidos en el rango' : 'Vendidos', l: byReason('vendido') }, { k: 'mu', t: repDated() ? 'Muertos en el rango' : 'Muertos', l: byReason('muerto') }, { k: 'o', t: repDated() ? 'Otras bajas en el rango' : 'Otras bajas', l: byReason('otro') }];
   v.innerHTML = `
-    <div class="row"><h2 class="grow">Reportes</h2><select id="rPlace" style="width:50%">${placeOptions(pl, 'Todos los lugares')}</select></div>
+    <h2>Reportes</h2>
+    <div class="row" style="align-items:center;margin-bottom:8px"><div class="chips grow" style="margin:0">${['activos', 'inactivos', 'todos'].map(x => `<button data-rst="${x}" class="${repF.st === x ? 'on' : ''}">${x[0].toUpperCase() + x.slice(1)}</button>`).join('')}</div><select id="rPlace" style="width:42%">${placeOptions(pl, 'Todos los lugares')}</select></div>
+    <div class="row" style="gap:8px"><div class="grow"><label>Desde</label><input type="date" id="rFrom" value="${repF.from}"></div><div class="grow"><label>Hasta</label><input type="date" id="rTo" value="${repF.to}"></div><button class="btn ghost sm" id="rToday" style="align-self:flex-end">Hoy</button></div>
+    ${repF.from || repF.to ? `<p class="small muted" style="margin:4px 0 8px">Activos, inactivos y terneritos: situación al final de la fecha "Hasta" (hoy si la dejás vacía). Vendidos, muertos y otras bajas: las ocurridas entre "Desde" y "Hasta".</p>` : ''}
     <div class="card">
-      <h3 style="margin-top:0">Resumen actual${pl ? ' – ' + esc(placeName(pl)) : ''}</h3>
+      <h3 style="margin-top:0">Resumen${repF.st === 'activos' && !repF.from && !repF.to ? ' actual' : ''}${pl ? ' – ' + esc(placeName(pl)) : ''}</h3>
       <div class="kpis">
-        <div class="kpi"><b>${act.length}</b><small>Activos</small></div>
-        <div class="kpi"><b>${act.filter(a => a.sex === 'H').length}</b><small>Hembras</small></div>
-        <div class="kpi"><b>${act.filter(a => a.sex === 'M').length}</b><small>Machos</small></div>
-        <div class="kpi"><b>${byReason('vendido')}</b><small>Vendidos</small></div>
-        <div class="kpi"><b>${byReason('muerto')}</b><small>Muertos</small></div>
-        <div class="kpi"><b>${byReason('otro')}</b><small>Otras bajas</small></div>
+        ${kpiGroups.filter(g => repF.st !== 'activos' || !['v', 'mu', 'o'].includes(g.k)).map(g => `<button class="kpi" data-k="${g.k}" style="border:0;font:inherit;color:inherit;cursor:pointer${repF.st !== 'activos' && ['v', 'mu', 'o'].includes(g.k) ? ';background:var(--amber-soft)' : ''}"><b>${g.l.length}</b><small>${g.t}</small></button>`).join('')}
       </div>
-      <table class="rep" style="margin-top:10px"><tr><th>Lugar</th><th>Activos</th><th>♀</th><th>♂</th></tr>
-        ${DB.places.filter(p => !pl || p.id === pl).map(p => { const l = activeAnimals(p.id); return `<tr><td>${esc(p.name)}</td><td>${l.length}</td><td>${l.filter(a => a.sex === 'H').length}</td><td>${l.filter(a => a.sex === 'M').length}</td></tr>`; }).join('')}
+      ${(() => { if (repF.st === 'inactivos') {
+          // bajas de terneritos (por muerte y por conteo) dentro del rango de fechas
+          const from = repF.from || '0000-00-00', to = repF.to || '9999-12-31'; let muerte = 0, conteo = 0;
+          DB.terneros.filter(x => !pl || lotPlaceAt(x) === pl).forEach(x => (x.hist || []).forEach(h => {
+            if (h.date < from || h.date > to) return; let r;
+            if ((r = /^Baja por muerte: (\d+)/.exec(h.text))) muerte += +r[1]; else if ((r = /^Baja por conteo: -(\d+)/.exec(h.text))) conteo += +r[1];
+          }));
+          const y = ';background:var(--amber-soft)';
+          return `<div class="kpis" style="margin-top:8px;grid-template-columns:1fr 1fr">
+            <div class="kpi" style="${y}"><b>${muerte}</b><small>Terneritos: bajas por muerte${repDated() ? ' en el rango' : ''}</small></div>
+            <div class="kpi" style="${y}"><b>${conteo}</b><small>Terneritos: bajas por conteo${repDated() ? ' en el rango' : ''}</small></div></div>`; }
+        const t = repLots(pl); const sum = k => t.reduce((n, x) => n + (x[k] || 0), 0);
+        return `<div class="kpis" style="margin-top:8px">
+        <div class="kpi"><b>${sum('m') + sum('h') + sum('s')}</b><small>Terneritos</small></div>
+        <div class="kpi"><b>${sum('h')}</b><small>Hembras</small></div>
+        <div class="kpi"><b>${sum('m')}</b><small>Machos</small></div>
+        <div class="kpi"><b>${sum('s')}</b><small>Sin identificar</small></div></div>`; })()}
+      <table class="rep" style="margin-top:10px"><tr><th>Lugar</th><th>Total</th><th>♀</th><th>♂</th><th>?s/i</th></tr>
+        ${DB.places.filter(p => !pl || p.id === pl).map(p => { const l = DB.animals.filter(a => repPlace(a) === p.id && repMatch(a));
+          const t = repF.st === 'inactivos' ? [] : repLots(p.id); const sum = k => t.reduce((n, x) => n + (x[k] || 0), 0);
+          return `<tr><td>${esc(p.name)}</td><td>${l.length}</td><td>${l.filter(a => a.sex === 'H').length}</td><td>${l.filter(a => a.sex === 'M').length}</td><td>${l.filter(a => a.sex !== 'H' && a.sex !== 'M').length}</td></tr>
+          ${repF.st === 'inactivos' ? '' : `<tr><td>Terneritos</td><td>${sum('m') + sum('h') + sum('s')}</td><td>${sum('h')}</td><td>${sum('m')}</td><td>${sum('s')}</td></tr>`}`; }).join('')}
       </table>
       <div class="row wrap" style="margin-top:10px">
         <button class="btn ghost sm" id="rAnimals">⬇ Planilla de animales</button>
@@ -1250,6 +1385,17 @@ function renderReportes() {
     </div>`;
   $$('[data-s]', v).forEach(li => li.onclick = () => sessionReport(session(li.dataset.s), pl));
   $('#rPlace').onchange = async e => { await setPlace(e.target.value); renderReportes(); };
+  $$('[data-k]', v).forEach(b => b.onclick = () => {
+    const g = kpiGroups.find(x => x.k === b.dataset.k), l = g.l.slice().sort(byAnimal);
+    openModal(`<div class="row"><h2 class="grow" style="margin:0">${g.t} (${l.length})</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+      <p class="small muted">${pl ? esc(placeName(pl)) : 'Todos los lugares'}</p>
+      <ul class="list">${l.map(a => `<li class="click" data-id="${a.id}">${animalLine(a)}</li>`).join('') || '<li class="muted">Ninguno</li>'}</ul>`, m =>
+      $$('[data-id]', m).forEach(li => li.onclick = () => animalDetail(li.dataset.id, renderReportes)));
+  });
+  $$('[data-rst]', v).forEach(b => b.onclick = () => { repF.st = b.dataset.rst; renderReportes(); });
+  $('#rToday').onclick = () => { repF.from = ''; repF.to = ''; renderReportes(); };
+  $('#rFrom').onchange = e => { repF.from = e.target.value; renderReportes(); };
+  $('#rTo').onchange = e => { repF.to = e.target.value; renderReportes(); };
   $('#rAnimals').onclick = () => exportAnimalsCSV(pl);
   $('#rAll').onclick = () => exportAllCSV(pl);
 }
@@ -1433,7 +1579,10 @@ function cuadroDetail(cid) {
   const c = cuadro(cid); if (!c) return;
   const st = cuadroState(c);
   const refresh = () => { renderCuadros(); cuadroDetail(cid); };
-  const hist = st.ps.slice().sort((a, b) => b.ingreso.localeCompare(a.ingreso));
+  const asc = st.ps.slice().sort((a, b) => a.ingreso.localeCompare(b.ingreso));
+  // días entre la salida anterior y este ingreso
+  const gap = p => { const prev = asc.slice(0, asc.indexOf(p)).filter(x => x.salida).pop(); return prev ? daysBetween(prev.salida, p.ingreso) : null; };
+  const hist = asc.slice().reverse();
   openModal(`
     <div class="row"><h2 class="grow" style="margin:0">Cuadro ${esc(c.name)}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
     <p class="small muted">${esc(placeName(c.placeId))}</p>
@@ -1442,13 +1591,14 @@ function cuadroDetail(cid) {
       <div class="kpi"><b class="d">${st.lastOut ? fmt(st.lastOut.salida) : '—'}</b><small>Última salida${st.lastOut && !st.open ? ' · ' + daysBetween(st.lastOut.salida, today()) + ' días' : ''}</small></div>
     </div>
     <div class="row" style="margin:12px 0">
-      ${st.open ? '<button class="btn grow" id="cdOut">Registrar salida</button>' : '<button class="btn grow" id="cdIn">Registrar ingreso</button>'}
+      ${st.open ? '<button class="btn danger grow" id="cdOut">Registrar salida</button>' : '<button class="btn grow" id="cdIn">Registrar ingreso</button>'}
     </div>
     <h3>Historia</h3>
     ${hist.length ? `<ul class="list">${hist.map(p => `
       <li><div class="row"><div class="grow">
         <b>${fmt(p.ingreso)}</b> → <b>${p.salida ? fmt(p.salida) : 'sigue'}</b>
         <span class="small muted">${p.salida ? ' · ' + daysBetween(p.ingreso, p.salida) + ' días' : ''}${p.cantidad ? ' · ' + p.cantidad + ' animales' : ''}</span>
+        ${gap(p) != null ? `<div class="small muted">↳ ${gap(p)} días desde la salida anterior hasta este ingreso</div>` : ''}
         ${p.obs ? `<div class="small" style="white-space:pre-wrap">${esc(p.obs)}</div>` : ''}
       </div><button class="btn ghost sm" data-pe="${p.id}" aria-label="Editar">✎</button></div></li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}
     ${!st.ps.length ? '<button class="btn danger ghost block" id="cdDel">🗑 Eliminar cuadro</button>' : ''}`, m => {
@@ -1472,30 +1622,45 @@ function pastoreoForm(p, cid, after, salidaNow) {
   // solo los cuadros del lugar que se está mirando (o el del cuadro que se edita)
   const pid = cuadro(pre)?.placeId || cuadrosPlace;
   const placesWith = DB.places.filter(pl => pl.id === pid && DB.cuadros.some(c => c.placeId === pl.id));
-  const picker = isNew
-    ? `<label>Cuadros <span class="muted">(tildá uno o varios)</span></label>
-       ${placesWith.map(pl => `<div class="small muted" style="margin:6px 0 4px">${esc(pl.name)}</div>
-         <div class="cpick">${DB.cuadros.filter(c => c.placeId === pl.id).sort(byName).map(c =>
-           `<label class="${cuadroState(c).open ? 'occ' : ''}"><input type="checkbox" class="pgChk" value="${c.id}" ${c.id === pre ? 'checked' : ''}><span>${esc(c.name)}</span></label>`).join('')}</div>`).join('')}
-       <p class="small muted" id="pgSel" style="margin:6px 0 0"></p>`
+  const multiOut = !!salidaNow && !isNew;
+  const picker = (isNew || multiOut)
+    ? `<label>Cuadros <span class="muted">(${multiOut ? 'ocupados: tildá uno o varios' : 'tildá uno o varios'})</span></label>
+       <details class="cdrop"><summary id="pgSel"></summary>
+       ${placesWith.map(pl => { const cs = DB.cuadros.filter(c => c.placeId === pl.id && (!multiOut || cuadroState(c).open)).sort(byName);
+         return `<div class="small muted" style="margin:6px 0 4px">${esc(pl.name)}</div>
+         <div class="cpick">${cs.map(c =>
+           `<label class="${cuadroState(c).open ? 'occ' : ''}"><input type="checkbox" class="pgChk" value="${c.id}" ${c.id === pre ? 'checked' : ''}><span>${esc(c.name)}</span></label>`).join('') || '<span class="muted small">No hay cuadros ocupados</span>'}</div>`; }).join('')}
+       </details>`
     : `<label>Cuadro</label><select id="pgC">${placesWith.map(pl =>
          `<optgroup label="${esc(pl.name)}">${DB.cuadros.filter(c => c.placeId === pl.id).sort(byName).map(c =>
            `<option value="${c.id}" ${c.id === pre ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</optgroup>`).join('')}</select>`;
   eventModal(`<h2>${isNew ? 'Ingreso de animales a cuadro' : salidaNow ? 'Salida de animales' : 'Editar movimiento'}</h2>
     ${picker}
-    <label>Fecha de ingreso</label><input id="pgIn" type="date" value="${p?.ingreso || today()}">
-    <label>Fecha de salida <span class="muted">(vacía si siguen en el cuadro)</span></label><input id="pgOut" type="date" value="${p?.salida || (salidaNow ? today() : '')}">
-    <label>Cantidad de animales</label><input id="pgN" inputmode="numeric" value="${p?.cantidad ?? ''}" placeholder="Ej: 40">
-    <label>Observaciones</label><textarea id="pgObs" placeholder="Ej: estado de la pastura, lote, motivo…">${esc(p?.obs || '')}</textarea>
-    <button class="btn block" id="pgSave">Guardar</button>
+    ${multiOut ? '' : `<label>Fecha de ingreso</label><input id="pgIn" type="date" value="${p?.ingreso || today()}">`}
+    <label>Fecha de salida <span class="muted">(${multiOut ? '' : 'vacía si siguen en el cuadro'})</span></label><input id="pgOut" type="date" value="${p?.salida || (salidaNow ? today() : '')}">
+    ${multiOut ? '' : `<label>Cantidad de animales</label><input id="pgN" inputmode="numeric" value="${p?.cantidad ?? ''}" placeholder="Ej: 40">`}
+    <label>Observaciones${multiOut ? ' <span class="muted">(se suman a las del ingreso)</span>' : ''}</label><textarea id="pgObs" placeholder="Ej: estado de la pastura, lote, motivo…">${multiOut ? '' : esc(p?.obs || '')}</textarea>
+    <button class="btn block ${multiOut ? 'danger' : ''}" id="pgSave">${multiOut ? 'Registrar salida' : 'Guardar'}</button>
     ${isNew ? '' : delBtn('Eliminar este movimiento')}`, after, (m, back) => {
-    $('#pgN', m).addEventListener('input', e => e.target.value = onlyDigits(e.target.value));
+    if ($('#pgN', m)) $('#pgN', m).addEventListener('input', e => e.target.value = onlyDigits(e.target.value));
     if (salidaNow) setTimeout(() => $('#pgOut', m).focus(), 50);
-    const selected = () => isNew ? $$('.pgChk', m).filter(c => c.checked).map(c => c.value) : [$('#pgC', m).value].filter(Boolean);
-    const showSel = () => { const s = selected(); $('#pgSel', m).textContent = s.length ? `Seleccionados: ${s.map(id => cuadro(id).name).join(', ')}` : 'Ningún cuadro seleccionado'; };
-    if (isNew) { $$('.pgChk', m).forEach(c => c.onchange = showSel); showSel(); }
+    const multi = isNew || multiOut;
+    const selected = () => multi ? $$('.pgChk', m).filter(c => c.checked).map(c => c.value) : [$('#pgC', m).value].filter(Boolean);
+    const showSel = () => { const s = selected(); $('#pgSel', m).textContent = s.length ? `Seleccionados: ${s.map(id => cuadro(id).name).join(', ')}` : 'Ningún cuadro seleccionado (tocá para elegir)'; };
+    if (multi) { $$('.pgChk', m).forEach(c => c.onchange = showSel); showSel(); }
     $('#pgSave', m).onclick = async () => {
-      const ids = selected(), ingreso = $('#pgIn', m).value, salida = $('#pgOut', m).value || null;
+      const ids = selected(), salida = $('#pgOut', m).value || null;
+      if (multiOut) {
+        if (!ids.length) return toast('Elegí al menos un cuadro');
+        if (!salida) return toast('Poné la fecha de salida');
+        const ops = ids.map(id => DB.pastoreos.find(x => x.cuadroId === id && !x.salida)).filter(Boolean);
+        if (ops.some(o => salida < o.ingreso)) return toast('La salida no puede ser anterior al ingreso');
+        const obs = $('#pgObs', m).value.trim();
+        ops.forEach(o => { o.salida = salida; if (obs) o.obs = o.obs ? o.obs + '\n' + obs : obs; });
+        await save(); toast(`Salida registrada en ${ids.map(id => cuadro(id).name).join(', ')}`); back();
+        return;
+      }
+      const ingreso = $('#pgIn', m).value;
       const n = $('#pgN', m).value ? parseInt($('#pgN', m).value, 10) : null;
       if (!ids.length) return toast('Elegí al menos un cuadro');
       if (!ingreso) return toast('Poné la fecha de ingreso');
