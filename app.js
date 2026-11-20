@@ -163,7 +163,7 @@ const recDate = (r) => r.date || session(r.sessionId)?.date || r.ts.slice(0, 10)
 function animalTimeline(a) {
   const ev = [];
   a.periods.forEach((p, i) => {
-    ev.push({ date: p.from, ord: 0, cls: 'ev-on', title: i === 0 ? 'ALTA / ACTIVO' : 'REACTIVADO', text: '', key: 'from:' + i });
+    ev.push({ date: p.from, ord: 0, cls: 'ev-on', title: i === 0 ? 'ALTA / ACTIVO' : 'REACTIVADO', text: p.obs || '', key: 'from:' + i });
     if (p.to) ev.push({ date: p.to, ord: 3, cls: 'ev-off', title: 'BAJA – ' + (REASONS[p.reason] || p.reason).toUpperCase(), text: p.detail || '', key: 'to:' + i });
   });
   a.places.forEach((e, i) => ev.push({ date: e.date, ord: 1, cls: 'ev-place', title: i === 0 ? 'INGRESA A ' + placeName(e.placeId).toUpperCase() : 'TRASLADO A ' + placeName(e.placeId).toUpperCase(), text: e.obs || '', kg: e.kg, key: 'place:' + i, i }));
@@ -727,13 +727,14 @@ function editPeriodFrom(a, i, after) {
   const p = a.periods[i], prev = a.periods[i - 1];
   eventModal(`<h2>${i === 0 ? 'Fecha de activación' : 'Reactivación'} – ${esc(nom(a))}</h2>
     <label>Fecha</label><input id="pfD" type="date" value="${p.from}">
+    <label>Observación</label><textarea id="pfObs" placeholder="Opcional">${esc(p.obs || '')}</textarea>
     <button class="btn block" id="pfSave">Guardar</button>
     ${i > 0 ? delBtn('Eliminar esta reactivación') : '<p class="small muted">Para borrar el animal por completo usá <b>Eliminar animal</b> en su ficha.</p>'}`, after, (m, back) => {
     $('#pfSave', m).onclick = async () => {
       const d = $('#pfD', m).value || p.from;
       if (p.to && d > p.to) return toast('La activación no puede ser posterior a la baja');
       if (prev && d < prev.to) return toast('No puede ser anterior a la baja previa (' + fmt(prev.to) + ')');
-      p.from = d; await save(); toast('Guardado'); back();
+      p.from = d; p.obs = $('#pfObs', m).value.trim(); await save(); toast('Guardado'); back();
     };
     const del = $('#xDel', m);
     if (del) del.onclick = async () => {
@@ -824,7 +825,7 @@ function bindLots(v, after) {
 }
 function lotView(l) {
   if (!l) return;
-  const h = [...(l.hist || [])].sort((a, b) => b.date.localeCompare(a.date));
+  const h = (l.hist || []).map((x, i) => ({ ...x, i })).sort((a, b) => b.date.localeCompare(a.date) || b.i - a.i);
   // totales sumados desde el texto del historial
   const tot = { altaConteo: 0, muerte: 0, bajaConteo: 0, altaAnimal: 0 };
   for (const x of l.hist || []) {
@@ -842,7 +843,27 @@ function lotView(l) {
       <p style="margin:0"><b>Resumen actual:</b> ${lotTotal(l)} (${lotCounts(l)})</p>
     </div>
     <h3>Historial detallado</h3>
-    ${h.length ? `<ul class="list">${h.map(x => `<li><b>${fmt(x.date)}</b> · ${esc(x.text)}</li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}`);
+    ${h.length ? `<ul class="list">${h.map(x => `<li><b>${fmt(x.date)}</b> · ${esc(x.text)} <button class="btn ghost sm" data-hobs="${x.i}" aria-label="Editar observación">✎</button></li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}`, m => {
+    $$('[data-hobs]', m).forEach(b => b.onclick = () => lotObsEdit(l, +b.dataset.hobs));
+  });
+}
+// Edita la observación de un movimiento del historial (va al final del texto, tras " · Obs: ")
+const OBS_SEP = ' · Obs: ';
+function lotObsEdit(l, i) {
+  const x = l.hist[i]; if (!x) return;
+  const k = x.text.indexOf(OBS_SEP), base = k < 0 ? x.text : x.text.slice(0, k), obs = k < 0 ? '' : x.text.slice(k + OBS_SEP.length);
+  openModal(`<h2>Observación del movimiento</h2>
+    <p class="small muted">${fmt(x.date)} · ${esc(base)}</p>
+    <label>Observación</label><textarea id="hObs" placeholder="Escribí la observación…">${esc(obs)}</textarea>
+    <button class="btn block" id="hSave">Guardar</button>
+    <button class="btn ghost block" id="hBack">Cancelar</button>`, m => {
+    $('#hBack', m).onclick = () => lotView(l);
+    $('#hSave', m).onclick = async () => {
+      const t = $('#hObs', m).value.trim();
+      x.text = t ? base + OBS_SEP + t : base;
+      await save(); toast('Observación actualizada'); lotView(l);
+    };
+  });
 }
 function lotForm(l, after) {
   openModal(`<h2>${l ? 'Editar terneritos' : 'Terneros contados'}</h2>
@@ -858,6 +879,7 @@ function lotForm(l, after) {
       </div>
       <div id="lbSexBox"><label>El ternero muerto era</label><select id="lbSex"><option value="m">♂ Macho</option><option value="h">♀ Hembra</option><option value="s">? No se sabe</option></select></div>
       <label id="lbCatL">Se resta de</label><select id="lbCat"><option value="m">♂ Machos (${l.m || 0})</option><option value="h">♀ Hembras (${l.h || 0})</option><option value="s">? Sin identificar (${l.s || 0})</option></select>
+      <label>Observación</label><input id="lbObs" placeholder="Opcional (ej: causa, detalle)">
       <button class="btn danger block" id="lbSave" style="margin-top:8px">Registrar baja</button>
       <div class="row" style="margin-top:14px"><h3 class="grow" style="margin:0">Datos de los terneritos</h3><button class="btn ghost sm" id="lEditToggle" aria-label="Editar datos">✎</button></div>` : ''}
     <div id="lFields" style="${l ? 'display:none' : ''}">
@@ -872,7 +894,7 @@ function lotForm(l, after) {
     <label>Observación</label><input id="lObs" value="${esc(l?.obs || '')}" placeholder="Opcional">
     <button class="btn block" id="lSave">Guardar</button>
     </div>
-    ${l && l.hist?.length ? `<h3>Historia</h3><ul class="list small">${[...l.hist].reverse().map(h => `<li>${fmt(h.date)} · ${esc(h.text)}</li>`).join('')}</ul>` : ''}
+    ${l && l.hist?.length ? `<h3>Historia</h3><ul class="list small">${l.hist.map((h, i) => ({ h, i })).reverse().map(({ h, i }) => `<li>${fmt(h.date)} · ${esc(h.text)} <button class="btn ghost sm" data-hobs="${i}" aria-label="Editar observación">✎</button></li>`).join('')}</ul>` : ''}
     ${l ? '<button class="btn danger ghost block" id="lDel">🗑 Eliminar terneritos</button>' : ''}
     <button class="btn ghost block" onclick="closeModal()">Cancelar</button>`, m => {
     const n = (id) => Math.floor(Number(onlyDigits($(id, m).value)) || 0);
@@ -907,14 +929,18 @@ function lotForm(l, after) {
         if (!alta && k > (l[cat] || 0)) return toast(`Solo hay ${l[cat] || 0} en ${LOT_CATS[cat].toLowerCase()}`);
         l[cat] = (l[cat] || 0) + (alta ? k : -k);
         const sex = $('#lbSex', m).value, cn = LOT_CATS[cat].toLowerCase();
-        const text = alta ? `Alta por conteo: +${k} (sumado a ${cn})`
+        let text = alta ? `Alta por conteo: +${k} (sumado a ${cn})`
           : muerte ? `Baja por muerte: ${k} · eran ${sex === 'm' ? 'machos' : sex === 'h' ? 'hembras' : 'sin determinar sexo'} · restado de ${cn}`
           : `Baja por conteo: -${k} (restado de ${cn})`;
         if (muerte) (l.bajas ||= []).push({ date, cat, sex, n: k, reason: 'muerto' });
+        const obs = $('#lbObs', m).value.trim();
+        if (obs) text += ' · Obs: ' + obs;
+        if (muerte) l.bajas[l.bajas.length - 1].obs = obs;
         (l.hist ||= []).push({ date, text });
         await save(); closeModal(); toast(text); after && after();
       };
     }
+    $$('[data-hobs]', m).forEach(b => b.onclick = () => lotObsEdit(l, +b.dataset.hobs));
     const del = $('#lDel', m);
     if (del) del.onclick = () => askConfirm(`¿Eliminar estos ${lotTotal(l)} terneros?`, { ok: 'Sí, eliminar', danger: true }).then(async ok => {
       if (!ok) return; DB.terneros = DB.terneros.filter(x => x.id !== l.id); await save(); closeModal(); after && after();
