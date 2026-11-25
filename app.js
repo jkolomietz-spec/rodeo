@@ -1040,7 +1040,9 @@ function lotView(l) {
       <p style="margin:0"><b>Resumen actual:</b> ${lotTotal(l)} (${lotCounts(l)})</p>
     </div>
     <h3>Historial detallado</h3>
-    ${h.length ? `<ul class="list">${h.map(x => `<li><b>${fmt(x.date)}</b> · ${esc(x.text)} <button class="btn ghost sm" data-hobs="${x.i}" aria-label="Editar observación">✎</button></li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}`, m => {
+    ${h.length ? `<ul class="list">${h.map(x => `<li><b>${fmt(x.date)}</b> · ${esc(x.text)} <button class="btn ghost sm" data-hobs="${x.i}" aria-label="Editar observación">✎</button></li>`).join('')}</ul>` : '<p class="muted">Sin movimientos registrados.</p>'}
+    <button class="btn ghost block" id="hVolver" style="margin-top:12px">← Volver</button>`, m => {
+    $('#hVolver', m).onclick = () => closeModal();
     $$('[data-hobs]', m).forEach(b => b.onclick = () => lotObsEdit(l, +b.dataset.hobs));
   });
 }
@@ -1065,7 +1067,7 @@ function lotObsEdit(l, i) {
 function lotForm(l, after) {
   openModal(`<h2>${l ? 'Editar terneritos' : 'Terneros contados'}</h2>
     ${l ? `<p class="small muted" style="margin:0">${esc(placeName(l.placeId))} · contados ${fmt(l.date)} · <b>${lotTotal(l)}</b> (${lotCounts(l)})${l.obs ? ' · ' + esc(l.obs) : ''}</p>` : ''}
-    ${l ? `<h3>Alta o baja</h3>
+    ${l ? `<details id="lbDet" style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Registrar alta/baja</summary>
       <div class="row" style="gap:8px">
         <div class="grow"><label>Movimiento</label><select id="lbType"><option value="baja">Baja</option><option value="alta">Alta</option></select></div>
         <div class="grow"><label>Motivo</label><select id="lbWhy"></select></div>
@@ -1078,6 +1080,12 @@ function lotForm(l, after) {
       <label id="lbCatL">Se resta de</label><select id="lbCat"><option value="m">♂ Machos (${l.m || 0})</option><option value="h">♀ Hembras (${l.h || 0})</option><option value="s">? Sin identificar (${l.s || 0})</option></select>
       <label>Observación</label><input id="lbObs" placeholder="Opcional (ej: causa, detalle)">
       <button class="btn danger block" id="lbSave" style="margin-top:8px">Registrar baja</button>
+      </details>
+      <details id="loDet" style="margin-top:10px"><summary style="cursor:pointer;font-weight:600">Agregar observación</summary>
+        <label>Fecha</label><input id="loDate" type="date" value="${today()}">
+        <label>Observación</label><textarea id="loTxt" placeholder="Escribí la observación…"></textarea>
+        <button class="btn block" id="loSave" style="margin-top:8px">Guardar observación</button>
+      </details>
       <div class="row" style="margin-top:14px"><h3 class="grow" style="margin:0">Datos de los terneritos</h3><button class="btn ghost sm" id="lEditToggle" aria-label="Editar datos">✎</button></div>` : ''}
     <div id="lFields" style="${l ? 'display:none' : ''}">
     <p class="small muted" style="margin:0">Cantidad contada sin número. Cuando se da de alta cada animal se puede descontar de acá.</p>
@@ -1102,6 +1110,13 @@ function lotForm(l, after) {
       if (l) { if (vals.placeId !== l.placeId) (l.hist ||= []).push({ date: vals.date, text: 'Corregido a ' + placeName(vals.placeId) }); Object.assign(l, vals); }
       else DB.terneros.push({ id: uid(), ...vals, hist: [{ date: vals.date, text: `Conteo en ${placeName(vals.placeId)}: ${lotCounts(vals)}` }] });
       await save(); closeModal(); after && after();
+    };
+    const lo = $('#loSave', m);
+    if (lo) lo.onclick = async () => {
+      const t = $('#loTxt', m).value.trim();
+      if (!t) return toast('Escribí la observación');
+      (l.hist ||= []).push({ date: $('#loDate', m).value || today(), text: 'Observación: ' + t });
+      await save(); closeModal(); toast('Observación guardada'); after && after();
     };
     const tg = $('#lEditToggle', m);
     if (tg) tg.onclick = () => { const f = $('#lFields', m); f.style.display = f.style.display === 'none' ? '' : 'none'; };
