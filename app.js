@@ -49,6 +49,7 @@ const emptyDB = () => ({
   terneros: [],   // packs de terneros contados sin identificar: {id, placeId, date, m, h, s, obs, hist:[{date,text}]}
   cuadros: [],    // {id, placeId, name}
   pastoreos: [],  // {id, cuadroId, ingreso, salida, cantidad, obs}
+  pesadas: [],    // pesadas de lote: {id, date, obs, placeId, open, createdAt, closedAt, weights:[{id, kg, sex}]}
   settings: { driveClientId: '', autoDrive: true, lastBackup: null, lastBackupHow: '', driveFolderId: null, driveDaily: null },
 });
 let DB = emptyDB();
@@ -168,8 +169,8 @@ function animalTimeline(a) {
   });
   a.places.forEach((e, i) => ev.push({ date: e.date, ord: 1, cls: 'ev-place', title: i === 0 ? 'INGRESA A ' + placeName(e.placeId).toUpperCase() : 'TRASLADO A ' + placeName(e.placeId).toUpperCase(), text: e.obs || '', kg: e.kg, key: 'place:' + i, i }));
   DB.records.filter(r => r.animalId === a.id).forEach(r => {
-    const s = session(r.sessionId);
-    ev.push({ date: recDate(r), ord: 2, cls: r.out ? 'ev-out' : '', title: (s ? s.obs + (r.note ? ' – OBSERVACIÓN' : '') : 'OBSERVACIÓN') + (r.out ? ' – FUERA DE SESIÓN' : ''), text: r.text, kg: r.kg, rec: r, ts: r.ts, key: 'rec:' + r.id });
+    const s = session(r.sessionId), pe = r.pesadaId && (DB.pesadas || []).find(x => x.id === r.pesadaId);
+    ev.push({ date: recDate(r), ord: 2, cls: r.out ? 'ev-out' : '', title: (s ? s.obs + (r.note ? ' – OBSERVACIÓN' : '') : pe ? 'PESADA' + (pe.obs ? ' – ' + pe.obs : '') : 'OBSERVACIÓN') + (r.out ? ' – FUERA DE SESIÓN' : ''), text: r.text, kg: r.kg, rec: r, ts: r.ts, key: 'rec:' + r.id });
   });
   ev.sort((x, y) => (y.date.localeCompare(x.date)) || (y.ord - x.ord) || ((y.ts || '').localeCompare(x.ts || '')) || ((y.i ?? 0) - (x.i ?? 0)));
   return ev;
@@ -442,12 +443,193 @@ function renderSetup(v) {
   };
 }
 
+// ---------- pesadas ----------
+const openPesada = () => (DB.pesadas || []).find(p => p.open);
+const avgKg = (arr) => arr.length ? Math.round(arr.reduce((t, w) => t + w.kg, 0) / arr.length * 10) / 10 : null;
+function pesadaStats(p) {
+  const h = p.weights.filter(w => w.sex === 'H'), m = p.weights.filter(w => w.sex === 'M');
+  return { n: p.weights.length, avg: avgKg(p.weights), nH: h.length, avgH: avgKg(h), nM: m.length, avgM: avgKg(m), h, m };
+}
+const wLabel = (w) => w.animalId && animal(w.animalId) ? nom(animal(w.animalId)) : (w.animalNom || '');
+const kgList = (arr) => arr.length ? arr.map(w => (wLabel(w) ? wLabel(w) + ': ' : '') + String(w.kg).replace('.', ',')).join(' · ') : '–';
+let pLook = { q: '', animalId: null, kb: 'numeric' };
+
+function pesadaDetail(p) {
+  const st = pesadaStats(p);
+  return `<div class="kpis mini" style="margin-top:6px">
+      <div class="kpi"><b>${st.avg == null ? '–' : fmtKg(st.avg)}</b><small>Prom. general (${st.n})</small></div>
+      <div class="kpi"><b>${st.avgH == null ? '–' : fmtKg(st.avgH)}</b><small>Prom. hembras (${st.nH})</small></div>
+      <div class="kpi"><b>${st.avgM == null ? '–' : fmtKg(st.avgM)}</b><small>Prom. machos (${st.nM})</small></div>
+    </div>
+    <p class="small" style="margin:8px 0 2px"><b>Hembras (${st.nH}):</b> ${esc(kgList(st.h))}</p>
+    <p class="small" style="margin:2px 0"><b>Machos (${st.nM}):</b> ${esc(kgList(st.m))}</p>`;
+}
+
+function renderPesadaOpen(p) {
+  const st = pesadaStats(p);
+  return `<div class="card">
+      <h2 style="margin-top:0">⚖️ Pesada en curso</h2>
+      <p class="small muted" style="margin:0">${fmt(p.date)} · ${esc(p.obs || 'sin observaciones')}${p.placeId ? ' · ' + esc(placeName(p.placeId)) : ''}</p>
+      ${p.ident ? `
+      <label>N° de animal (4 dígitos), número largo (14) o texto (hasta ${ALIAS_MAX})</label>
+      <div class="row">
+        <input id="pQ" class="big grow" inputmode="${pLook.kb}" autocomplete="off" maxlength="${ALIAS_MAX}" value="${esc(pLook.q)}" placeholder="0000" style="min-width:0">
+        <button class="btn ghost sm" id="pKb" title="Cambiar teclado">${pLook.kb === 'text' ? '123' : 'ABC'}</button>
+        <button class="btn" id="pFind" style="padding:16px">Buscar</button>
+      </div>
+      <div id="pResult"></div>` : `
+      <label>Peso (kg)</label>
+      <input id="pKg" class="big" inputmode="decimal" autocomplete="off" placeholder="Ej: 280">
+      <div class="row" style="margin-top:8px">
+        <button class="btn grow" id="pAddH" style="padding:16px">♀ Hembra</button>
+        <button class="btn grow" id="pAddM" style="padding:16px">♂ Macho</button>
+      </div>`}
+      <div class="kpis" style="margin-top:10px">
+        <div class="kpi"><b>${st.n}</b><small>Pesados</small></div>
+        <div class="kpi"><b>${st.nH}</b><small>Hembras</small></div>
+        <div class="kpi"><b>${st.nM}</b><small>Machos</small></div>
+      </div>
+      ${p.weights.length ? `<ul class="list" style="margin-top:8px">${p.weights.slice().reverse().slice(0, 40).map(w => `
+        <li><div class="row">${wLabel(w) ? `<span class="num">${esc(wLabel(w))}</span>` : ''}<span class="tag grey">${w.sex === 'H' ? 'Hembra' : 'Macho'}</span><b class="grow">${fmtKg(w.kg)}</b>
+        <button class="btn ghost sm" data-delw="${w.id}" aria-label="Quitar">✕</button></div></li>`).join('')}</ul>` : '<p class="muted small">Todavía no se pesó ningún animal.</p>'}
+      <div class="row" style="margin-top:10px">
+        <button class="btn danger ghost grow" id="pCancel">Cancelar pesada</button>
+        <button class="btn grow" id="pEnd">Finalizar pesada</button>
+      </div>
+    </div>`;
+}
+
+// Pesada con identificación: se busca el animal (igual que en la sesión) y el peso queda en su historia.
+function bindPesadaIdent(v, p) {
+  const q = $('#pQ', v);
+  const go = () => { pLook.q = normAlias(q.value); pLook.animalId = null; showPesadaLookup(p); };
+  $('#pFind', v).onclick = go;
+  $('#pKb', v).onclick = () => {
+    pLook.kb = pLook.kb === 'text' ? 'numeric' : 'text';
+    q.inputMode = pLook.kb; $('#pKb', v).textContent = pLook.kb === 'text' ? '123' : 'ABC';
+    q.blur(); setTimeout(() => q.focus(), 30);
+  };
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); go(); } });
+  showPesadaLookup(p);
+  if (!pLook.animalId) q.focus();
+}
+
+function showPesadaLookup(p) {
+  const box = $('#pResult'); if (!box) return;
+  if (!pLook.q && !pLook.animalId) { box.innerHTML = ''; return; }
+  let a = pLook.animalId ? animal(pLook.animalId) : null;
+  if (!a) {
+    const found = findAnimals(pLook.q), act = found.filter(isActiveFlag);
+    const here = p.placeId ? act.filter(x => inPlace(x, p.placeId)) : act;
+    if (act.length === 1) a = act[0]; else if (here.length === 1) a = here[0];
+    else {
+      box.innerHTML = found.length
+        ? `<div class="card"><h3 style="margin-top:0">${act.length ? 'Coincidencias' : 'Solo hay animales inactivos con ese número'}</h3>
+           <ul class="list">${found.map(x => `<li class="click" data-pick="${x.id}">${animalLine(x)}</li>`).join('')}</ul>
+           <button class="btn ghost block" id="pNew">Dar de alta uno nuevo con este número</button></div>`
+        : `<div class="card center"><p><b>${esc(pLook.q)}</b> no está registrado.</p><button class="btn block" id="pNew">Dar de alta este animal</button></div>`;
+      $$('[data-pick]', box).forEach(li => li.onclick = () => { pLook.animalId = li.dataset.pick; showPesadaLookup(p); });
+      $('#pNew', box).onclick = () => registerAnimal(pLook.q, na => { pLook = { ...pLook, q: nom(na), animalId: na.id }; render(); });
+      return;
+    }
+  }
+  pLook.animalId = a.id;
+  const lw = lastWeight(a), already = p.weights.filter(w => w.animalId === a.id).length;
+  box.innerHTML = `<div class="card">
+      ${animalLine(a)}
+      ${lw ? `<div class="small muted" style="margin-top:6px">Último peso: <b>${fmtKg(lw.kg)}</b> (${fmt(lw.date)})</div>` : ''}
+      ${already ? '<div class="notice" style="margin:10px 0 0">Ya se pesó en esta pesada. Podés cargar otro peso.</div>' : ''}
+      ${!isActiveFlag(a) ? '<div class="notice" style="margin:10px 0 0">Este animal está dado de baja.</div>' : ''}
+      <label>Peso (kg)</label>${kgInput('pAKg')}
+      ${a.sex ? '' : `<label>Sexo (el animal no lo tiene cargado)</label><select id="pASex"><option value="">Elegir…</option><option value="H">Hembra</option><option value="M">Macho</option></select>`}
+      <div class="actions4" style="grid-template-columns:1fr 1fr">
+        <button class="btn" id="pASave">Guardar peso ✓</button>
+        <button class="btn btn-cancel" id="pAnular">Anular</button>
+      </div></div>`;
+  $('#pAnular', box).onclick = () => { pLook = { ...pLook, q: '', animalId: null }; render(); };
+  const save1 = async () => {
+    const kg = parseKg($('#pAKg', box).value);
+    if (kg == null) return toast('Escribí el peso');
+    if (Number.isNaN(kg)) return toast('Peso no válido');
+    const sex = a.sex || $('#pASex', box)?.value;
+    if (!sex) return toast('Elegí el sexo');
+    const rec = { id: uid(), sessionId: p.id, pesadaId: p.id, animalId: a.id, kg, text: '', ts: new Date().toISOString(), date: p.date };
+    DB.records.push(rec);
+    p.weights.push({ id: uid(), kg, sex, animalId: a.id, animalNom: nom(a), recId: rec.id });
+    pLook = { ...pLook, q: '', animalId: null };
+    await save(); toast(`${nom(a)}: ${fmtKg(kg)} ✓`); render();
+  };
+  $('#pASave', box).onclick = save1;
+  $('#pAKg', box).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save1(); } });
+  $('#pAKg', box).focus();
+}
+
+function bindPesada(v) {
+  const p = openPesada();
+  if (p) {
+    if (p.ident) bindPesadaIdent(v, p);
+    else {
+      const kg = $('#pKg', v);
+      const add = async (sex) => {
+        const n = parseKg(kg.value);
+        if (n == null) return toast('Escribí el peso');
+        if (Number.isNaN(n)) return toast('Peso no válido');
+        p.weights.push({ id: uid(), kg: n, sex });
+        await save(); render();
+        const k = $('#pKg'); if (k) k.focus();
+      };
+      $('#pAddH', v).onclick = () => add('H');
+      $('#pAddM', v).onclick = () => add('M');
+      kg.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); toast('Tocá Hembra o Macho'); } });
+    }
+    $$('[data-delw]', v).forEach(b => b.onclick = async () => {
+      const w = p.weights.find(x => x.id === b.dataset.delw);
+      if (w?.recId) DB.records = DB.records.filter(r => r.id !== w.recId);
+      p.weights = p.weights.filter(x => x.id !== b.dataset.delw); await save(); render();
+    });
+    $('#pCancel', v).onclick = async () => {
+      if (!(await askConfirm(`¿Cancelar la pesada? Se pierden los ${p.weights.length} pesos cargados${p.ident ? ' (también los agregados a los animales)' : ''}.`, { ok: 'Sí, cancelar', danger: true }))) return;
+      DB.records = DB.records.filter(r => r.pesadaId !== p.id);
+      DB.pesadas = DB.pesadas.filter(x => x !== p); await save(); render();
+    };
+    $('#pEnd', v).onclick = async () => {
+      if (!p.weights.length) return toast('Cargá al menos un peso');
+      const st = pesadaStats(p);
+      if (!(await askConfirm(`¿Finalizar la pesada?\nPesados: ${st.n} · Hembras: ${st.nH} · Machos: ${st.nM}`, { ok: 'Finalizar' }))) return;
+      p.open = false; p.closedAt = new Date().toISOString();
+      await save(); render(); toast('Pesada guardada en sesiones ✓');
+    };
+  } else {
+    $('#pStart', v).onclick = async () => {
+      DB.pesadas = DB.pesadas || [];
+      DB.pesadas.push({ id: uid(), date: $('#pDate', v).value || today(), obs: $('#pObs', v).value.trim().toUpperCase(), placeId: $('#pPlace', v).value || null, ident: $('#pMode', v).value === '1', open: true, createdAt: new Date().toISOString(), closedAt: null, weights: [] });
+      pLook = { q: '', animalId: null, kb: 'numeric' };
+      await save(); render();
+      const k = $('#pKg') || $('#pQ'); if (k) k.focus();
+    };
+  }
+  $$('[data-delpes]', v).forEach(b => b.onclick = async () => {
+    const x = DB.pesadas.find(q => q.id === b.dataset.delpes); if (!x) return;
+    if (!(await askConfirm(`¿Eliminar la pesada del ${fmt(x.date)}${x.obs ? ' (' + x.obs + ')' : ''} con ${x.weights.length} pesos? No se puede deshacer.`, { ok: 'Sí, eliminar', danger: true }))) return;
+    DB.records = DB.records.filter(r => r.pesadaId !== x.id);
+    DB.pesadas = DB.pesadas.filter(q => q !== x); await save(); render();
+  });
+  $$('[data-reopenpes]', v).forEach(b => b.onclick = async () => {
+    if (openPesada()) return toast('Ya hay una pesada en curso');
+    const x = DB.pesadas.find(q => q.id === b.dataset.reopenpes); if (!x) return;
+    x.open = true; x.closedAt = null; await save(); render();
+  });
+}
+
 function renderNewSession(v) {
-  const past = DB.sessions.slice().sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt)).slice(0, 8);
+  const sesItems = DB.sessions.map(s => ({ kind: 's', date: s.date, at: s.createdAt, s }));
+  const pesItems = (DB.pesadas || []).filter(p => !p.open).map(p => ({ kind: 'p', date: p.date, at: p.createdAt, p }));
+  const past = [...sesItems, ...pesItems].sort((a, b) => b.date.localeCompare(a.date) || (b.at || '').localeCompare(a.at || '')).slice(0, 10);
+  const pOpen = openPesada();
   v.innerHTML = `
     ${backupNotice()}
-    <div class="card">
-      <h2>Nueva sesión</h2>
+    <details class="card" id="newSesBox">
+      <summary style="cursor:pointer;font-size:20px;font-weight:700">Nueva sesión</summary>
       <label>Fecha</label><input id="sDate" type="date" value="${today()}">
       <label>Observación de la sesión</label>
       <input id="sObs" placeholder="Ej: RETIRO DIU" autocapitalize="characters" list="obsList">
@@ -455,13 +637,28 @@ function renderNewSession(v) {
       <label>Lugar</label><select id="sPlace">${placeOptions(workPlace(), 'Todos los lugares')}</select>
       <p class="small muted" style="margin:4px 0 0">Con un lugar elegido solo se trabaja sobre los animales de ese lugar; con "Todos" sobre cualquiera.</p>
       <button class="btn block" id="sStart">Iniciar sesión</button>
-    </div>
-    ${past.length ? `<div class="card"><h3 style="margin-top:0">Sesiones anteriores</h3><ul class="list">${past.map(s => `
+    </details>
+    ${pOpen ? renderPesadaOpen(pOpen) : `<details class="card" id="newPesBox">
+      <summary style="cursor:pointer;font-size:20px;font-weight:700">Nueva pesada</summary>
+      <label>Fecha</label><input id="pDate" type="date" value="${today()}">
+      <label>Observaciones</label><input id="pObs" placeholder="Ej: PESADA TERNEROS" autocapitalize="characters">
+      <label>Lugar</label><select id="pPlace">${placeOptions(workPlace(), 'Todos los lugares')}</select>
+      <label>Identificación</label>
+      <select id="pMode"><option value="0">Sin identificar los animales (solo peso y sexo)</option><option value="1">Con número o identificación del animal</option></select>
+      <button class="btn block" id="pStart">Iniciar pesada</button>
+    </details>`}
+    ${past.length ? `<div class="card"><h3 style="margin-top:0">Sesiones anteriores</h3><ul class="list">${past.map(it => it.kind === 'p' ? `
+      <li><div class="row"><div class="grow"><b>${fmt(it.p.date)}</b> · ⚖️ Pesada${it.p.obs ? ' · ' + esc(it.p.obs) : ''}<div class="small muted">${it.p.placeId ? esc(placeName(it.p.placeId)) + ' · ' : ''}${it.p.weights.length} pesados</div></div></div>
+      <details style="margin-top:4px"><summary class="small" style="cursor:pointer;font-weight:700">Ver detalle</summary>${pesadaDetail(it.p)}</details>
+      <div class="row" style="justify-content:flex-end;margin-top:6px">
+      <button class="btn ghost sm" data-reopenpes="${it.p.id}">Reabrir</button>
+      <button class="btn danger ghost sm" data-delpes="${it.p.id}" aria-label="Eliminar pesada">🗑</button></div></li>` : (s => `
       <li><div class="row"><div class="grow"><b>${fmt(s.date)}</b> · ${esc(s.obs)}<div class="small muted">${s.placeId ? esc(placeName(s.placeId)) + ' · ' : ''}${sessionAnimalIds(s.id).length} relevados</div></div></div>
       <div class="row" style="justify-content:flex-end;margin-top:6px">
       <button class="btn ghost sm" data-note="${s.id}">📝 Agregar observaciones</button>
       <button class="btn ghost sm" data-reopen="${s.id}">Reabrir</button>
-      <button class="btn danger ghost sm" data-delses="${s.id}" aria-label="Eliminar sesión">🗑</button></div></li>`).join('')}</ul></div>` : ''}`;
+      <button class="btn danger ghost sm" data-delses="${s.id}" aria-label="Eliminar sesión">🗑</button></div></li>`)(it.s)).join('')}</ul></div>` : ''}`;
+  bindPesada(v);
   $$('[data-delses]', v).forEach(b => b.onclick = () => deleteSession(session(b.dataset.delses), render));
   $$('[data-note]', v).forEach(b => b.onclick = () => sessionNote(session(b.dataset.note), '', null));
   $('#sStart').onclick = async () => {
@@ -1069,6 +1266,27 @@ function animalForm(d, onSave) {
   });
 }
 
+// Pesos históricos del animal (del más viejo al más nuevo), con la diferencia y los kg/día entre pesajes
+function weightHistory(a, back) {
+  const ws = animalTimeline(a).filter(e => e.kg != null).reverse();
+  const day = (d) => Date.parse(d + 'T00:00:00Z') / 864e5;
+  const rows = ws.map((e, i) => {
+    const prev = ws[i - 1]; let dif = '', gdp = '';
+    if (prev) {
+      const d = Math.round((e.kg - prev.kg) * 10) / 10, days = day(e.date) - day(prev.date);
+      dif = (d > 0 ? '+' : '') + String(d).replace('.', ',') + ' kg';
+      if (days > 0) gdp = (Math.round(d / days * 1000) / 1000 > 0 ? '+' : '') + String(Math.round(d / days * 1000) / 1000).replace('.', ',') + ' kg/día';
+    }
+    return `<tr><td>${fmt(e.date)}</td><td><b>${esc(String(e.kg).replace('.', ','))}</b></td><td>${dif}<div class="small muted">${gdp}</div></td><td class="small">${esc(e.title)}</td></tr>`;
+  });
+  openModal(`
+    <div class="row"><h2 class="grow" style="margin:0">⚖️ Pesos de ${esc(nom(a))}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    ${ws.length ? `<table class="rep" style="margin-top:8px"><tr><th>Fecha</th><th>Kg</th><th>Cambio</th><th>Origen</th></tr>${rows.join('')}</table>
+    ${ws.length > 1 ? `<p class="small muted">Total: ${(() => { const t = Math.round((ws[ws.length - 1].kg - ws[0].kg) * 10) / 10; return (t > 0 ? '+' : '') + String(t).replace('.', ',') + ' kg entre el primer y el último peso'; })()}</p>` : ''}`
+      : '<p class="muted">Este animal todavía no tiene pesos.</p>'}
+    <button class="btn ghost block" id="whBack">Volver a la ficha</button>`, m => { $('#whBack', m).onclick = back; });
+}
+
 function animalDetail(id, after) {
   const a = animal(id); if (!a) return;
   const refresh = () => { after && after(); animalDetail(id, after); };
@@ -1086,7 +1304,7 @@ function animalDetail(id, after) {
       <div class="kpi"><b class="d">${fmt(p?.from)}</b><small>Activado</small></div>
       <div class="kpi"><b class="d">${p?.to ? fmt(p.to) : '—'}</b><small>${p?.to ? 'Baja: ' + esc(REASONS[p.reason]) : 'Sin baja'}</small></div>
       <div class="kpi"><b>${DB.records.filter(r => r.animalId === a.id).length}</b><small>Registros</small></div>
-      <div class="kpi"><b class="d">${lw ? fmtKg(lw.kg) : '—'}</b><small>${lw ? 'Peso al ' + fmt(lw.date) : 'Sin peso'}</small></div>
+      <button class="kpi" id="dKg" style="border:0;font:inherit;color:inherit;cursor:pointer"><b class="d">${lw ? fmtKg(lw.kg) : '—'}</b><small>${lw ? 'Peso al ' + fmt(lw.date) : 'Sin peso'}${lw ? ' · ver historial' : ''}</small></button>
     </div>
     ${p?.to && p.detail ? `<p class="small"><b>Detalle de baja:</b> ${esc(p.detail)}</p>` : ''}
     <div class="row wrap" style="margin:12px 0 0">
@@ -1102,6 +1320,7 @@ function animalDetail(id, after) {
       Object.assign(a, { idv: f.idv, rfid: f.rfid, alias: f.alias, sex: f.sex, cat: f.cat, motherId: f.motherId }); p.from = f.date;
       await save(); refresh();
     });
+    $('#dKg', m).onclick = () => weightHistory(a, () => animalDetail(id, after));
     $('#dMove', m).onclick = () => moveAnimals([a.id], refresh);
     const off = $('#dOff', m); if (off) off.onclick = () => deactivate(a, refresh);
     const on = $('#dOn', m); if (on) on.onclick = () => reactivate(a, refresh);
@@ -1357,6 +1576,7 @@ function lotPlaceAt(l) {
 const repLots = (pl) => DB.terneros.filter(x => !x.ended && (!repDated() || x.date <= repEnd()) && (!pl || lotPlaceAt(x) === pl));
 function renderReportes() {
   const v = $('#view'), pl = curPlace();
+  const pes = (DB.pesadas || []).filter(p => !pl || !p.placeId || p.placeId === pl);
   const ses = DB.sessions.filter(s => !pl || !s.placeId || s.placeId === pl).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt));
   const base = DB.animals.filter(a => (!pl || repPlace(a) === pl) && repMatch(a));
   const baseSex = repF.st === 'todos' ? base.filter(a => repDated() ? activeAt(a, repEnd()) : isActive(a)) : base;   // en "Todos", ♀/♂ son los activos
@@ -1407,12 +1627,18 @@ function renderReportes() {
     <div class="card">
       <h3 style="margin-top:0">Por sesión</h3>
       ${pl ? `<p class="small muted" style="margin-top:0">Las sesiones de "Todos los lugares" muestran solo los animales que estaban en ${esc(placeName(pl))}.</p>` : ''}
-      <ul class="list">${ses.map(s => { const st = sessionStats(s, pl); return `
+      <ul class="list">${[...ses.map(s => ({ s, date: s.date, at: s.createdAt })), ...pes.map(p => ({ p, date: p.date, at: p.createdAt }))]
+        .sort((a, b) => b.date.localeCompare(a.date) || (b.at || '').localeCompare(a.at || '')).map(it => { if (it.p) { const p = it.p; return `
+        <li class="click" data-p="${p.id}"><div class="row"><div class="grow"><b>${fmt(p.date)}</b> · ⚖️ Pesada${p.obs ? ' · ' + esc(p.obs) : ''} ${p.open ? '<span class="tag warn">ABIERTA</span>' : ''}
+        <div class="small muted">${p.placeId ? esc(placeName(p.placeId)) : 'Todos los lugares'}</div></div>
+        <div class="center"><b>${p.weights.length}</b><div class="small muted">pesados</div></div></div></li>`; }
+        const s = it.s, st = sessionStats(s, pl); return `
         <li class="click" data-s="${s.id}"><div class="row"><div class="grow"><b>${fmt(s.date)}</b> · ${esc(s.obs)} ${s.open ? '<span class="tag warn">ABIERTA</span>' : ''}
         <div class="small muted">${s.placeId ? esc(placeName(s.placeId)) : 'Todos los lugares' + (pl ? ' (solo ' + esc(placeName(pl)) + ')' : '')}</div></div>
         <div class="center"><b>${st.ids.length}</b>/<span class="muted">${st.activos.length}</span><div class="small muted">relev./activos</div></div></div></li>`; }).join('') || '<li class="muted">Todavía no hay sesiones</li>'}</ul>
     </div>`;
   $$('[data-s]', v).forEach(li => li.onclick = () => sessionReport(session(li.dataset.s), pl));
+  $$('[data-p]', v).forEach(li => li.onclick = () => pesadaReport(DB.pesadas.find(x => x.id === li.dataset.p)));
   $('#rPlace').onchange = async e => { await setPlace(e.target.value); renderReportes(); };
   $$('[data-k]', v).forEach(b => b.onclick = () => {
     const g = kpiGroups.find(x => x.k === b.dataset.k), l = g.l.slice().sort(byAnimal);
@@ -1427,6 +1653,24 @@ function renderReportes() {
   $('#rTo').onchange = e => { repF.to = e.target.value; renderReportes(); };
   $('#rAnimals').onclick = () => exportAnimalsCSV(pl);
   $('#rAll').onclick = () => exportAllCSV(pl);
+}
+
+function pesadaReport(p) {
+  if (!p) return;
+  openModal(`
+    <div class="row"><h2 class="grow" style="margin:0">⚖️ Pesada${p.obs ? ' · ' + esc(p.obs) : ''}</h2><button class="btn ghost sm" onclick="closeModal()">✕</button></div>
+    <p class="muted small">${fmt(p.date)} · ${p.placeId ? esc(placeName(p.placeId)) : 'Todos los lugares'}${p.open ? ' · ABIERTA' : ''}</p>
+    ${pesadaDetail(p)}
+    <button class="btn block" id="pgCsv" style="margin-top:12px">⬇ Exportar CSV</button>`, m => {
+    $('#pgCsv', m).onclick = () => {
+      const st = pesadaStats(p);
+      downloadCSV(`pesada-${p.date}-${slug(p.obs || 'pesada')}`, [
+        ['Pesada', p.obs], ['Fecha', fmt(p.date)], ['Lugar', p.placeId ? placeName(p.placeId) : 'Todos los lugares'],
+        ['Pesados', st.n], ['Peso promedio (kg)', csvKg(st.avg)], ['Hembras', st.nH], ['Peso promedio hembras (kg)', csvKg(st.avgH)],
+        ['Machos', st.nM], ['Peso promedio machos (kg)', csvKg(st.avgM)], [], ['Sexo', 'Kg'],
+        ...p.weights.map(w => [w.sex === 'H' ? 'Hembra' : 'Macho', csvKg(w.kg)])]);
+    };
+  });
 }
 
 function sessionNote(s, pl, after) {
